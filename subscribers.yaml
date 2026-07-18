@@ -1,0 +1,24 @@
+# ============================================================
+# 訂閱者名單
+# 新訂閱：從 Google 表單回覆複製資料，照格式加一段，Commit 後隔天生效
+# 取消訂閱：把那一段整段刪掉
+#
+#   name     : 稱呼（會出現在報告和信件開頭）
+#   email    : 收件信箱
+#   language : zh（中文）/ en（英文）/ both（兩份都寄）
+#   tickers  : 觀察清單，最多 15 檔（超過會自動截斷）
+#              美股直接打代號；台股上市加 .TW、上櫃加 .TWO
+#              可以用清單格式，也可以直接貼逗號分隔的字串
+# ============================================================
+
+subscribers:
+  - name: Howard
+    email: your_email@gmail.com        # ← 改成你自己的，先自己測
+    language: both
+    tickers: [NEM, NVDA, NOC, NKE, COST, FCX, GOOG, AVGO, CIEN, SPCX, XOM]
+
+  # 範例（複製這段來新增訂閱者）：
+  # - name: Alice
+  #   email: alice@example.com
+  #   language: en
+  #   tickers: "AAPL, MSFT, TSLA, AMZN"

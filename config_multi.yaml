@@ -1,0 +1,21 @@
+# ============================================================
+# 系統設定【多人訂閱版】
+# ============================================================
+
+ai:
+  # 預設 openai/gpt-4o-mini（免費額度最寬，約 150 次/天）
+  # 品質優先可改 openai/gpt-4.1（高階模型額度約 50 次/天，人少時才夠用）
+  model: openai/gpt-4o-mini
+  temperature: 0.4
+  seconds_between_calls: 5
+
+  # 全域 AI 呼叫預算：超過此數就用佔位文字降級，避免撞免費額度牆
+  # 注意額度是「整個 GitHub 帳號共用」，包含你的個人版報告與財經摘要專案
+  max_total_ai_calls: 140
+
+  # 每位訂閱者的「綜合觀察」段落（每人每語言多 1 次 AI 呼叫）
+  # 訂閱人數多、額度吃緊時可改 false 關掉
+  include_synthesis: true
+
+email:
+  sender_name: "Daily Stock Brief"
