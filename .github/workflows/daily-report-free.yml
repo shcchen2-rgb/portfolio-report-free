@@ -59,6 +59,8 @@ jobs:
       - name: 產生並寄送報告
         if: steps.tzguard.outputs.run == 'true'
         env:
+          # 手動觸發（Run workflow）＝測試模式：休市日也強制執行，分析最近一個交易日
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
