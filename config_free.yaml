@@ -6,7 +6,7 @@
 report:
   title: "每日投資組合分析報告（免費版）"
   # 漲跌顏色慣例：tw = 紅漲綠跌（台灣習慣）, us = 綠漲紅跌（美國習慣）
-  color_convention: tw
+  color_convention: us
 
 ai:
   # 預設 openai/gpt-4o-mini：免費額度最寬（約 150 次/天），
