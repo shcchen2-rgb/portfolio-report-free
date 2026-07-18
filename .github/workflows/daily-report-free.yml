@@ -1,0 +1,75 @@
+name: Daily Portfolio Report (Free)
+
+on:
+  schedule:
+    # GitHub cron 只吃 UTC，所以排兩個時間點，再由 guard 步驟
+    # 確認「洛杉磯當地時間是否為 16 點」，自動處理日光節約切換：
+    - cron: "0 23 * * 1-5"   # 夏令 PDT：UTC 23:00 = 洛杉磯 16:00（週一～五）
+    - cron: "0 0 * * 2-6"    # 冬令 PST：UTC 00:00 = 洛杉磯前一日 16:00（週一～五）
+  workflow_dispatch:          # 允許手動觸發（測試用）
+
+# ★ models: read 是免費版的關鍵——讓 GITHUB_TOKEN 有權呼叫 GitHub Models
+permissions:
+  contents: read
+  models: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 檢查洛杉磯時間（日光節約 guard）
+        id: tzguard
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "手動觸發，直接執行"
+            exit 0
+          fi
+          hour=$(TZ="America/Los_Angeles" date +%H)
+          echo "洛杉磯目前時間：$(TZ='America/Los_Angeles' date)"
+          if [ "$hour" = "16" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "非洛杉磯 16 點（日光節約另一組 cron），本次跳過"
+          fi
+
+      - name: Checkout
+        if: steps.tzguard.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: 安裝 Python
+        if: steps.tzguard.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝系統套件（PDF 引擎 + 中文字型）
+        if: steps.tzguard.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fonts-noto-cjk
+
+      - name: 安裝 Python 套件
+        if: steps.tzguard.outputs.run == 'true'
+        run: pip install -r requirements_free.txt
+
+      - name: 產生並寄送報告
+        if: steps.tzguard.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python daily_report_free.py
+
+      - name: 備份 PDF（保留 30 天，寄信失敗時可從這裡下載）
+        if: steps.tzguard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-free-${{ github.run_id }}
+          path: output/*.pdf
+          retention-days: 30
+          if-no-files-found: ignore
