@@ -579,9 +579,9 @@ strong { color: #111827; }
 
 
 def build_css(lang):
-    # 中文＝紅漲綠跌（台灣慣例）；英文＝綠漲紅跌（美國慣例）
+    # 中文、英文＝綠漲紅跌（美國慣例）
     if lang == "zh":
-        up, down = "#dc2626", "#15803d"
+        up, down = "#15803d", "#dc2626"
     else:
         up, down = "#15803d", "#dc2626"
     return CSS_TEMPLATE.replace("__UP_COLOR__", up).replace("__DOWN_COLOR__", down)
