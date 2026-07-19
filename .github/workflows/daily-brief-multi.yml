@@ -60,6 +60,8 @@ jobs:
         env:
           # 手動觸發＝測試模式：休市日也強制執行，分析最近一個交易日
           FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          # Google 表單回應試算表的 CSV 網址（沒設就改讀 subscribers.yaml）
+          SUBSCRIBERS_CSV_URL: ${{ secrets.SUBSCRIBERS_CSV_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
