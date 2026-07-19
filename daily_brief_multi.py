@@ -12,6 +12,8 @@
 
 import os
 import re
+import io
+import csv
 import sys
 import time
 import smtplib
@@ -116,27 +118,149 @@ def is_tw(ticker):
 
 
 def norm_lang(v):
-    v = str(v or "").strip().lower()
-    if v in ("zh", "中文", "chinese", "繁體中文", "tc"):
+    """把表單的自由文字答案轉成 ['zh'] / ['en'] / ['zh','en']
+    可接受：'English 英文版'、'Mandarin Chinese 中文版'、'zh'、'both'、'中英文都要' 等"""
+    s = str(v or "").strip().lower()
+    if not s:
         return ["zh"]
-    if v in ("en", "english", "英文"):
-        return ["en"]
-    if v in ("both", "全部", "兩者", "都要", "all", "zh+en"):
+    if s in ("zh", "en"):
+        return [s]
+    if any(k in s for k in ("both", "全部", "兩者", "都要", "兩份", "中英", "zh+en", "all")):
         return ["zh", "en"]
+    has_zh = any(k in s for k in ("中文", "繁", "chinese", "mandarin", "中"))
+    has_en = any(k in s for k in ("english", "英文", "英"))
+    if has_zh and has_en:
+        return ["zh", "en"]
+    if has_en:
+        return ["en"]
+    if has_zh:
+        return ["zh"]
     return ["zh"]  # 預設中文
 
 
 def norm_tickers(v):
+    """接受清單或字串；容錯全形逗號、頓號、$ 前綴、多餘空白"""
     if isinstance(v, str):
-        parts = re.split(r"[,\s、]+", v)
+        parts = re.split(r"[,\s、，；;/|]+", v)
     else:
         parts = list(v or [])
     out = []
     for p in parts:
-        p = str(p).strip().upper()
+        p = str(p).strip().upper().lstrip("$").strip(".")
         if p and p not in out:
             out.append(p)
     return out[:MAX_TICKERS_PER_SUB]
+
+
+def valid_email(e):
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(e or "").strip()))
+
+
+# ------------------------------------------------------------
+# 訂閱者來源：Google 表單回應試算表（CSV）→ 失敗時退回 subscribers.yaml
+# ------------------------------------------------------------
+FIELD_KEYS = [
+    ("email", ("email", "e-mail", "信箱", "郵件", "郵箱", "電子郵件")),
+    ("language", ("language", "語言", "lang", "版本")),
+    ("tickers", ("ticker", "stock", "symbol", "股票", "代號", "清單", "觀察", "watchlist")),
+    ("name", ("name", "姓名", "稱呼", "名字", "call you")),
+]
+
+
+def to_csv_url(url):
+    """把各種 Google 試算表網址轉成可直接下載的 CSV 連結"""
+    url = (url or "").strip()
+    if not url or "output=csv" in url or "format=csv" in url:
+        return url
+    m = re.search(r"/spreadsheets/d/e/([^/]+)/pub", url)
+    if m:  # 已發布到網路的網址
+        base = url.split("?")[0].replace("/pubhtml", "/pub")
+        gid = re.search(r"gid=(\d+)", url)
+        q = "output=csv" + (f"&gid={gid.group(1)}&single=true" if gid else "")
+        return f"{base}?{q}"
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if m:  # 一般試算表網址（需設為「知道連結的人可檢視」）
+        gid = re.search(r"gid=(\d+)", url)
+        g = gid.group(1) if gid else "0"
+        return (f"https://docs.google.com/spreadsheets/d/{m.group(1)}"
+                f"/export?format=csv&gid={g}")
+    return url
+
+
+def map_columns(headers):
+    """把表單的問題標題對應到欄位；同一欄只會被指派一次"""
+    mapping = {}
+    used = set()
+    for field, keys in FIELD_KEYS:
+        for h in headers:
+            if h in used or not h:
+                continue
+            hl = re.sub(r"\s+", "", str(h)).lower()
+            if any(k.replace(" ", "") in hl for k in keys):
+                mapping.setdefault(field, []).append(h)
+                used.add(h)
+    return mapping
+
+
+def parse_subscribers_csv(text):
+    """解析表單回應 CSV；同一 email 重複填寫時以最後一次為準"""
+    reader = csv.DictReader(io.StringIO(text))
+    headers = reader.fieldnames or []
+    cols = map_columns(headers)
+    if "email" not in cols or "tickers" not in cols:
+        raise ValueError(f"表單欄位對應失敗，讀到的標題為：{headers}")
+
+    def pick(row, field):
+        for h in cols.get(field, []):
+            v = (row.get(h) or "").strip()
+            if v:
+                return v
+        return ""
+
+    by_email = {}
+    for row in reader:  # 表單回應依時間排序，後填的會覆蓋先填的
+        email = pick(row, "email")
+        if not valid_email(email):
+            if email:
+                print(f"  [略過] email 格式不正確：{email}")
+            continue
+        tickers = norm_tickers(pick(row, "tickers"))
+        if not tickers:
+            print(f"  [略過] {email} 未填股票代號")
+            continue
+        name = pick(row, "name") or email.split("@")[0]
+        by_email[email.lower()] = {
+            "name": name,
+            "email": email,
+            "language": pick(row, "language"),
+            "tickers": tickers,
+        }
+    return list(by_email.values())
+
+
+def load_subscribers():
+    """優先讀 Google 表單（環境變數 SUBSCRIBERS_CSV_URL），失敗則退回 subscribers.yaml"""
+    url = os.environ.get("SUBSCRIBERS_CSV_URL", "").strip()
+    if url:
+        try:
+            r = requests.get(to_csv_url(url), timeout=60, allow_redirects=True)
+            r.raise_for_status()
+            text = r.content.decode("utf-8-sig", errors="replace")
+            if "<html" in text[:400].lower():
+                raise ValueError("下載到的是網頁而非 CSV，請確認試算表已「發布到網路」且格式選 CSV")
+            subs = parse_subscribers_csv(text)
+            print(f"訂閱來源：Google 表單（讀到 {len(subs)} 位有效訂閱者）")
+            return subs
+        except Exception as e:
+            print(f"[警告] 表單讀取失敗（{e}）")
+            print("       改用 subscribers.yaml 作為備援名單")
+    try:
+        subs = load_yaml("subscribers.yaml")["subscribers"]
+        print(f"訂閱來源：subscribers.yaml（{len(subs)} 筆）")
+        return subs
+    except Exception as e:
+        print(f"[錯誤] 備援名單也讀取失敗：{e}")
+        return []
 
 
 # ------------------------------------------------------------
@@ -615,21 +739,33 @@ def send_all_emails(cfg, deliveries):
 # ------------------------------------------------------------
 def main():
     cfg = load_yaml("config_multi.yaml")
-    raw_subs = load_yaml("subscribers.yaml")["subscribers"]
     include_synth = bool(cfg["ai"].get("include_synthesis", True))
     call_gap = float(cfg["ai"].get("seconds_between_calls", 5))
+    sub_cfg = cfg.get("subscribers", {}) or {}
+    blocklist = {str(e).strip().lower() for e in (sub_cfg.get("blocklist") or [])}
+    max_subs = int(sub_cfg.get("max_subscribers", 30))
+
+    raw_subs = load_subscribers()
 
     # 整理訂閱者
     subs = []
     for srec in raw_subs:
-        langs = norm_lang(srec.get("language"))
+        email = str(srec.get("email", "")).strip()
         tickers = norm_tickers(srec.get("tickers"))
-        if not srec.get("email") or not tickers:
+        if not valid_email(email) or not tickers:
             print(f"  [警告] 訂閱者資料不完整，跳過：{srec}")
             continue
-        subs.append({"name": srec.get("name", srec["email"].split("@")[0]),
-                     "email": srec["email"].strip(),
-                     "langs": langs, "tickers": tickers})
+        if email.lower() in blocklist:
+            print(f"  [退訂] 略過 {email}")
+            continue
+        subs.append({"name": srec.get("name") or email.split("@")[0],
+                     "email": email,
+                     "langs": norm_lang(srec.get("language")),
+                     "tickers": tickers})
+
+    if len(subs) > max_subs:
+        print(f"  [警告] 訂閱者 {len(subs)} 人超過上限 {max_subs}，本次僅處理前 {max_subs} 人")
+        subs = subs[:max_subs]
 
     langs_needed = sorted({lg for s in subs for lg in s["langs"]})
     unique_tickers = sorted({tk for s in subs for tk in s["tickers"]})
