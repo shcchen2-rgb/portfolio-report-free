@@ -17,5 +17,13 @@ ai:
   # 訂閱人數多、額度吃緊時可改 false 關掉
   include_synthesis: true
 
+subscribers:
+  # 退訂名單：有人回信說不想收了，把 email 加在這裡（表單資料不用動）
+  blocklist:
+    # - someone@example.com
+
+  # 安全閥：一天最多寄給幾人，避免表單被大量填寫時爆掉額度
+  max_subscribers: 30
+
 email:
   sender_name: "Daily Stock Brief"
