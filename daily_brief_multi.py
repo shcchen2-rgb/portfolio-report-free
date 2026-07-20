@@ -78,11 +78,12 @@ L = {
         "th_ticker": "代號", "th_date": "資料日期", "th_vol": "量能",
         "close_label": "收盤",
         "failed_ticker": "無法取得此代號的價格資料，請確認代號（美股直接打代號、台股加 .TW / 上櫃 .TWO）。",
-        "subtitle": "資料來源：Yahoo Finance、Google News、GitHub Models AI（未經網路查證）",
+        "subtitle": "資料來源：Yahoo Finance（市場數據）、Google News（新聞來源）",
+        "disclosure_title": "方法論與重要聲明",
         "tz_note": "（洛杉磯時間）",
-        "disclaimer": "本報告由自動化系統以 AI 產生（僅依據新聞標題與價量數據推論，未經人工審核與網路查證），僅供一般資訊參考，不構成投資建議或任何證券之買賣邀約。資料可能延遲或有誤，投資決策請自行判斷並以官方來源為準。",
+        "disclaimer": "本報告以量化市場數據（Yahoo Finance）與公開新聞來源自動彙整產生，分析內容經演算法生成、未經人工覆核，資料可能延遲或有誤。所有結論之依據皆已標註來源編號，敬請自行查證原文。本報告為一般性資訊，不構成投資建議、亦非任何證券之買賣邀約，不考量個別讀者之財務狀況或投資目標。投資決策請自行判斷並諮詢合格專業人士。",
         "email_intro": "您的每日股票觀察報告已產生（詳細分析請見附件 PDF）：",
-        "email_unsub": "本服務為免費測試版，僅供參考、不構成投資建議。若不想再收到，直接回覆此信告知即可取消訂閱。",
+        "email_unsub": "本報告為一般性資訊，不構成投資建議；完整聲明請見附件末頁。如需取消訂閱，直接回覆此信告知即可。",
         "fmt_driver": "**主要原因**：…\n**產業鏈觀察**：…\n**與大盤/類股的關係**：…\n**後續觀察**：…",
     },
     "en": {
@@ -97,11 +98,12 @@ L = {
         "th_ticker": "Ticker", "th_date": "Data date", "th_vol": "Volume",
         "close_label": "Close",
         "failed_ticker": "Price data unavailable — please double-check the ticker (US tickers as-is; Taiwan listed = .TW, OTC = .TWO).",
-        "subtitle": "Sources: Yahoo Finance, Google News, GitHub Models AI (not web-verified)",
+        "subtitle": "Sources: Yahoo Finance (market data), Google News (headlines)",
+        "disclosure_title": "Methodology & Disclosures",
         "tz_note": " (Los Angeles time)",
-        "disclaimer": "This report is generated automatically by AI, based solely on news headlines and price/volume data, without human review or web verification. It is provided for general informational purposes only and does not constitute investment advice or a solicitation to buy or sell any security. Data may be delayed or inaccurate; please make your own decisions and verify with official sources.",
+        "disclaimer": "This report is compiled automatically from quantitative market data (Yahoo Finance) and public news sources; the analysis is algorithmically generated and not reviewed by a human. Data may be delayed or inaccurate. Every conclusion is tagged to a numbered source — readers are encouraged to verify the originals. This is general information only, not investment advice or an offer to buy or sell any security, and does not consider any individual's financial situation or objectives. Please make your own decisions and consult a qualified professional.",
         "email_intro": "Your daily stock watchlist brief is ready (see the attached PDF for full analysis):",
-        "email_unsub": "This is a free beta service, for information only — not investment advice. Reply to this email anytime to unsubscribe.",
+        "email_unsub": "General information only — not investment advice. Full disclosures appear on the final page of the attached report. Reply to this email anytime to unsubscribe.",
         "fmt_driver": "**Key driver**: …\n**Industry-chain view**: …\n**Versus market & sector**: …\n**What to watch**: …",
     },
 }
@@ -659,8 +661,11 @@ tr:nth-child(even) td { background: #f9fafb; }
 .ev-meta { color: #94a3b8; }
 .evidence a { color: #2563eb; text-decoration: none; }
 .stock-block p { margin: 5px 0; }
-.disclaimer { margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb;
-  font-size: 8pt; color: #9ca3af; }
+.disclaimer { margin-top: 24px; padding: 9px 11px; border-top: 2px solid #cbd5e1;
+  background: #f8fafc; font-size: 7.8pt; color: #64748b; line-height: 1.5;
+  text-align: justify; }
+.disc-title { font-weight: 700; color: #475569; font-size: 8.2pt;
+  letter-spacing: 0.4px; margin-bottom: 3px; }
 strong { color: #111827; }
 """
 
@@ -748,7 +753,7 @@ def build_report_html(lang, sub, rows, failed, market_overview,
 <h2>{t['sec_synth']}</h2>
 {md_to_html(synthesis)}
 
-<div class="disclaimer">{t['disclaimer']}</div>
+<div class="disclaimer"><div class="disc-title">{t['disclosure_title']}</div>{t['disclaimer']}</div>
 </body></html>"""
     return html
 
