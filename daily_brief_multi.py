@@ -313,42 +313,85 @@ def market_was_open_today():
 # ------------------------------------------------------------
 # 新聞（Google News RSS，依股票只抓一次、所有訂閱者共用）
 # ------------------------------------------------------------
-def google_news(query, lang="en", limit=12):
+def google_news(query, lang="en", limit=12, days=3):
+    """抓取近 N 天新聞，回傳結構化項目（含來源與連結）"""
+    q = f"{query} when:{days}d"
     if lang == "zh":
-        url = (f"https://news.google.com/rss/search?q={quote(query)}"
+        url = (f"https://news.google.com/rss/search?q={quote(q)}"
                f"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
     else:
-        url = (f"https://news.google.com/rss/search?q={quote(query)}"
+        url = (f"https://news.google.com/rss/search?q={quote(q)}"
                f"&hl=en-US&gl=US&ceid=US:en")
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    items = []
     try:
         feed = feedparser.parse(url)
-        items = []
-        for e in feed.entries[:limit]:
-            title = e.get("title", "").strip()
-            published = e.get("published", "")
+        for e in feed.entries:
+            if len(items) >= limit:
+                break
+            pub = None
+            if getattr(e, "published_parsed", None):
+                pub = dt.datetime(*e.published_parsed[:6], tzinfo=dt.timezone.utc)
+                if pub < cutoff:      # 硬性過濾，確保只用近三天的消息
+                    continue
             src = ""
             try:
                 src = e.source.title
             except Exception:
                 pass
-            items.append(f"- {title} ({src}, {published})")
-        return items
+            items.append({
+                "title": (e.get("title") or "").strip(),
+                "source": src or "—",
+                "date": pub.date().isoformat() if pub else "",
+                "link": e.get("link", ""),
+            })
     except Exception as ex:
         print(f"  [警告] 新聞抓取失敗 {query}：{ex}")
-        return []
+    return items
 
 
-def news_for_ticker(t):
+def rank_news(items, ticker, top_n):
+    """標題有提到代號的排前面，其次依日期新到舊"""
+    base = ticker.split(".")[0].upper()
+
+    def score(it):
+        return (1 if base in it["title"].upper() else 0, it.get("date", ""))
+
+    return sorted(items, key=score, reverse=True)[:top_n]
+
+
+def news_for_ticker(t, days=3, top_n=5):
     if is_tw(t):
         code = t.split(".")[0]
-        items = google_news(f"{code} 股價 when:1d", lang="zh")
-        if len(items) < 4:
-            items = google_news(f"{code} when:2d", lang="zh")
+        items = google_news(f"{code} 股價", lang="zh", days=days)
     else:
-        items = google_news(f"{t} stock when:1d", lang="en")
-        if len(items) < 4:
-            items = google_news(f"{t} when:2d", lang="en")
-    return items
+        items = google_news(f"{t} stock", lang="en", days=days)
+    return rank_news(items, t, top_n)
+
+
+def news_for_prompt(items, lang):
+    """給 AI 看的編號清單，編號與報告中的佐證清單一致"""
+    if not items:
+        return "（近三日未取得相關新聞）" if lang == "zh" else "(No headlines found in the past 3 days.)"
+    return "\n".join(f"[{i}] {it['title']}（{it['source']}, {it['date']}）"
+                     for i, it in enumerate(items, 1))
+
+
+def news_html(items, lang):
+    """報告中呈現的佐證清單（標題＋來源＋日期＋原文連結）"""
+    if not items:
+        msg = ("近三日未取得可佐證的新聞來源。" if lang == "zh"
+               else "No supporting headlines found in the past 3 days.")
+        return f"<div class='evidence'><div class='ev-title'>{msg}</div></div>"
+    head = "新聞佐證（近三日）" if lang == "zh" else "Sources (past 3 days)"
+    rows = "".join(
+        f"<li>{it['title']}　<span class='ev-meta'>— {it['source']}, {it['date']}</span>"
+        + (f" <a href='{it['link']}'>{'原文' if lang == 'zh' else 'link'}</a>" if it["link"] else "")
+        + "</li>"
+        for it in items
+    )
+    return (f"<div class='evidence'><div class='ev-title'>{head}</div>"
+            f"<ol class='ev-list'>{rows}</ol></div>")
 
 
 # ------------------------------------------------------------
@@ -413,37 +456,66 @@ def call_ai(cfg, system, user, lang, max_tokens=1200):
 
 
 MARKET_SYSTEM = {
-    "zh": ("你是一位資深的總體經濟與美股市場分析師，撰寫繁體中文日報。"
-           "你沒有上網查證的能力，只能依據提供的收盤數據與新聞標題分析。"
-           "要具體引用提供的資料；資料中沒有的事情不要斷言，寧可保守。"),
-    "en": ("You are a senior macro and US equity market analyst writing a daily brief in English. "
-           "You have NO web access; rely only on the closing data and news headlines provided. "
-           "Be specific and ground every claim in the provided material; when uncertain, stay conservative."),
+    "zh": ("你是一位資深總經與美股策略分析師，讀者是有基本財務知識的散戶。"
+           "你沒有上網能力，只能使用提供的收盤數據與已編號的新聞標題。\n"
+           "要求：1) 論述用 [n] 標註新聞依據，至少引用 2 則；"
+           "2) 每個判斷都要附上實際數字（指數漲跌幅、殖利率水準、VIX 變化）；"
+           "3) 點名具體事件（哪個數據、哪位官員、哪家公司財報），不要寫「市場觀望」「情緒謹慎」"
+           "這類換成任何一天都成立的句子；4) 資料裡沒有的因果一律不要斷言，"
+           "找不到明確驅動因素就說今天缺乏單一主導題材。"),
+    "en": ("You are a senior macro and US equity strategist writing for financially literate retail readers. "
+           "You have NO web access; use only the closing data and numbered headlines provided.\n"
+           "Requirements: 1) cite headlines as [n], at least 2 citations; 2) attach real figures to every "
+           "judgement (index moves, yield levels, VIX change); 3) name specific events — which data release, "
+           "which official, whose earnings — never filler like 'markets were cautious' that would fit any day; "
+           "4) assert no causality absent from the material; if there is no clear driver, say the session "
+           "lacked a single dominant theme."),
 }
 
 STOCK_SYSTEM = {
-    "zh": ("你是一位資深買方產業分析師，任務是解讀「這檔股票今天為什麼漲或跌」。"
-           "你沒有上網查證的能力，只能依據提供的價量數據、新聞標題與大盤背景推論。要求：\n"
-           "1. 具體：從提供的新聞標題中找出實際催化劑（財報、升降評、訂單、產品消息等）。\n"
-           "2. 產業鏈視角：依該公司在產業結構中的位置分析（例如半導體區分 IC 設計、代工、設備、"
-           "記憶體、EDA，並考慮上下游與主要客戶連動；軟體看訂閱與 AI 商業化；金融看利率環境）。\n"
-           "3. 區分 alpha 與 beta：比較個股與大盤及所屬類股 ETF 的表現，判斷是自身消息、"
-           "跟隨類股/大盤、還是被其他權值股帶動。\n"
-           "4. 誠實原則（最重要）：提供的標題中若無明確個股催化劑，直接說「今日波動主要反映"
-           "大盤/類股走勢，提供的新聞中無重大個股消息」，絕不編造。\n"
-           "5. 繁體中文 markdown，200–400 字。"),
-    "en": ("You are a senior buy-side industry analyst. Task: explain why this stock moved today. "
-           "You have NO web access; rely only on the price/volume data, headlines, and market context provided. Rules:\n"
-           "1. Be specific: identify actual catalysts from the provided headlines (earnings, guidance, "
-           "analyst rating or price-target changes, orders, product or policy news).\n"
-           "2. Industry-structure perspective: analyze according to the company's position in its industry "
-           "(for semiconductors distinguish fabless design, foundry, equipment, memory, EDA, plus supply-chain "
-           "and key-customer linkages; for software, subscription/cloud metrics and AI monetization; for banks, rates).\n"
-           "3. Separate alpha from beta: compare the stock's move with the broad market and its sector ETF to judge "
-           "whether it was company-specific news, sector/market drift, or spillover from other mega-caps.\n"
-           "4. Honesty rule (most important): if the headlines contain no clear company-specific catalyst, say plainly "
-           "that today's move mainly tracked the market/sector and no major company news was found. Never fabricate.\n"
-           "5. English markdown, 150–300 words."),
+    "zh": ("你是一位資深買方產業分析師。讀者是有基本財務知識的散戶——看得懂財測、本益比、"
+           "beta、類股輪動等術語，不需要解釋基礎名詞，但需要你把「今天為什麼漲跌」講到有憑有據。\n"
+           "你沒有上網能力，只能使用提供的價量數據與已編號的新聞標題。\n\n"
+           "【硬性要求，違反即為不合格】\n"
+           "1. 引用佐證：論述時用 [1][2][3] 標註依據的新聞編號，全文至少引用 3 則。"
+           "若提供的新聞不足 3 則、或內容與該股無關，明確寫出「可佐證的新聞不足」並只引用有效的，"
+           "不要為了湊數而牽強連結。\n"
+           "2. 具體優先：每個論點都要有可查證的事實——數字、百分比、日期、公司名、機構名、產品或"
+           "製程代號。嚴禁只寫「市場情緒轉弱」「投資人保持觀望」「受到大盤影響」這種沒有主詞、"
+           "沒有數據、換成任何一檔股票都成立的句子。\n"
+           "3. 量化比較：明確寫出個股漲跌幅與所屬類股 ETF、大盤指數的差距並下判斷。"
+           "格式示範（僅示範寫法，數字要用實際資料）：「XYZ -2.2%，同期 SMH -2.1%、S&P 500 -1.0%，"
+           "與類股同步但落後大盤 1.2 個百分點，顯示賣壓來自類股層級而非個股利空」。\n"
+           "4. 次產業精準度：不要只說「半導體」，要指出是 IC 設計、晶圓代工、先進封裝、HBM 記憶體、"
+           "設備或 EDA 哪一塊；不要只說「科技股」，要區分雲端、數位廣告、SaaS 或硬體；"
+           "礦業要區分貴金屬（避險/利率邏輯）與工業金屬（景氣循環邏輯）。\n"
+           "5. 誠實條款（最重要）：新聞中若找不到個股層級的催化劑，就直接寫「今日走勢主要由類股／"
+           "大盤驅動，近三日新聞中無重大個股消息」。無法從提供資料推導的因果關係一律不要寫，"
+           "絕不編造財報數字、法說內容或分析師動作。\n\n"
+           "輸出：繁體中文 markdown，250–400 字，用下列四個粗體小標分段。"),
+    "en": ("You are a senior buy-side industry analyst. Your readers are retail investors with basic "
+           "financial literacy — they understand guidance, multiples, beta and sector rotation, so don't "
+           "explain basics; do give them a defensible answer to 'why did this move today'.\n"
+           "You have NO web access. Use only the price/volume data and the numbered headlines provided.\n\n"
+           "[Hard requirements — output is unacceptable if violated]\n"
+           "1. Cite your evidence: mark claims with [1][2][3] referring to the numbered headlines, at least "
+           "3 citations overall. If fewer than 3 headlines are relevant, say so explicitly and cite only the "
+           "valid ones rather than forcing a connection.\n"
+           "2. Specificity first: every claim needs a checkable fact — a number, percentage, date, company "
+           "name, institution or product/process node. Never write filler like 'sentiment weakened' or "
+           "'investors stayed cautious' — sentences that would be equally true of any stock are unacceptable.\n"
+           "3. Quantified comparison: state the stock's move against its sector ETF and the index, then draw "
+           "a conclusion. Illustrative form only (use the real figures): 'XYZ -2.2% vs SMH -2.1% and S&P 500 "
+           "-1.0% — in line with the sector but 1.2pp behind the index, implying sector-level pressure "
+           "rather than company-specific bad news.'\n"
+           "4. Sub-industry precision: not 'semiconductors' but fabless design, foundry, advanced packaging, "
+           "HBM memory, equipment or EDA; not 'tech' but cloud, digital advertising, SaaS or hardware; for "
+           "miners, separate precious metals (hedge/rates logic) from industrial metals (cyclical logic).\n"
+           "5. Honesty clause (most important): if no company-specific catalyst appears in the headlines, "
+           "state plainly that the move mainly tracked the sector/market with no major company news in the "
+           "past three days. Never infer beyond the provided material, and never invent earnings figures, "
+           "call transcripts or analyst actions.\n\n"
+           "Output: English markdown, 200–320 words, using the four bold sub-headings below."),
 }
 
 SYNTH_SYSTEM = {
@@ -491,35 +563,43 @@ Write a "Market & Macro" daily summary (180–300 words): 1) overall performance
     return call_ai(cfg, MARKET_SYSTEM[lang], user, lang, max_tokens=1200)
 
 
-def analyze_stock(cfg, lang, snap, market_overview, news_items):
-    news_text = "\n".join(news_items) if news_items else (
-        "（近兩日 RSS 未抓到相關標題）" if lang == "zh" else "(No recent headlines found via RSS.)")
+def analyze_stock(cfg, lang, snap, market_ctx, news_items):
+    news_text = news_for_prompt(news_items, lang)
     vol_txt = f"{snap['vol_ratio']:.2f}x" if snap.get("vol_ratio") else "n/a"
+    n = len(news_items)
     if lang == "zh":
         user = f"""股票：{snap['ticker']}
-今日數據（資料日期 {snap['date']}）：收盤 {snap['close']:.2f}，漲跌 {snap['change_pct']:+.2f}%，量能 {vol_txt}（vs 20 日均量）
+今日數據（資料日期 {snap['date']}）：收盤 {snap['close']:.2f}，漲跌 {snap['change_pct']:+.2f}%，
+成交量為 20 日均量的 {vol_txt}
 
-今日大盤背景摘要（供判斷 beta 用）：
-{market_overview[:700]}
+今日大盤與類股對照數據（請用來做量化比較）：
+{market_ctx}
 
-相關新聞標題：
+近三日相關新聞（共 {n} 則，引用時請用編號）：
 {news_text}
 
-請分析這檔股票今天漲跌的原因，輸出格式（粗體小標＋內文）：
-{L['zh']['fmt_driver']}"""
+請分析這檔股票今天漲跌的原因，嚴格依下列格式輸出（粗體小標＋內文）：
+**主要原因**：（點出最可能的驅動因素，並用 [n] 標註佐證來源）
+**產業鏈觀察**：（指出精確的次產業定位與上下游／客戶連動，並用 [n] 佐證）
+**與大盤/類股的關係**：（寫出個股 % vs 類股 ETF % vs 大盤 % 的具體比較與判斷）
+**後續觀察**：（依據新聞中已出現的線索指出後續變數，不要虛構日期或事件）"""
     else:
         user = f"""Stock: {snap['ticker']}
-Today's data (as of {snap['date']}): close {snap['close']:.2f}, change {snap['change_pct']:+.2f}%, volume {vol_txt} vs 20-day avg
+Today's data (as of {snap['date']}): close {snap['close']:.2f}, change {snap['change_pct']:+.2f}%,
+volume at {vol_txt} of the 20-day average
 
-Market backdrop (to judge beta):
-{market_overview[:700]}
+Market and sector reference data (use this for the quantified comparison):
+{market_ctx}
 
-Related headlines:
+Headlines from the past 3 days ({n} total — cite them by number):
 {news_text}
 
-Explain why this stock moved today. Output format (bold labels + text):
-{L['en']['fmt_driver']}"""
-    return call_ai(cfg, STOCK_SYSTEM[lang], user, lang, max_tokens=1200)
+Explain why this stock moved today, strictly in this format (bold labels + text):
+**Key driver**: (the most likely catalyst, with [n] citations)
+**Industry-chain view**: (precise sub-industry positioning and supply-chain/customer linkages, cited)
+**Versus market & sector**: (explicit stock % vs sector ETF % vs index % comparison and conclusion)
+**What to watch**: (forward variables grounded in the headlines above — no invented dates or events)"""
+    return call_ai(cfg, STOCK_SYSTEM[lang], user, lang, max_tokens=1400)
 
 
 def synthesize(cfg, lang, sub_name, rows, analyses):
@@ -570,7 +650,14 @@ tr:nth-child(even) td { background: #f9fafb; }
 .up { color: __UP_COLOR__; font-weight: 700; }
 .down { color: __DOWN_COLOR__; font-weight: 700; }
 .flat { color: #6b7280; }
-.stock-block { page-break-inside: avoid; margin-bottom: 6px; }
+.stock-block { page-break-inside: avoid; margin-bottom: 14px; }
+.evidence { background: #f8fafc; border-left: 3px solid #94a3b8; border-radius: 3px;
+  padding: 6px 10px 6px 4px; margin: 8px 0 0 0; }
+.ev-title { font-size: 8.5pt; font-weight: 700; color: #475569; margin-left: 6px; }
+.ev-list { margin: 4px 0 2px 0; padding-left: 22px; font-size: 8.5pt; color: #334155; }
+.ev-list li { margin-bottom: 2px; line-height: 1.45; }
+.ev-meta { color: #94a3b8; }
+.evidence a { color: #2563eb; text-decoration: none; }
 .stock-block p { margin: 5px 0; }
 .disclaimer { margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb;
   font-size: 8pt; color: #9ca3af; }
@@ -579,7 +666,7 @@ strong { color: #111827; }
 
 
 def build_css(lang):
-    # 中文、英文＝綠漲紅跌（美國慣例）
+    # 中文＝；英文＝綠漲紅跌（美國慣例）
     if lang == "zh":
         up, down = "#15803d", "#dc2626"
     else:
@@ -599,7 +686,7 @@ def md_to_html(text):
 
 
 def build_report_html(lang, sub, rows, failed, market_overview,
-                      analyses, synthesis, index_snaps, sector_snaps):
+                      analyses, synthesis, index_snaps, sector_snaps, news_cache):
     t = L[lang]
     css = build_css(lang)
 
@@ -627,11 +714,12 @@ def build_report_html(lang, sub, rows, failed, market_overview,
     stocks_html = ""
     for r in rows:
         a = analyses.get((r["ticker"], lang), "")
+        ev = news_html(news_cache.get(r["ticker"], []), lang)
         stocks_html += (
             f"<div class='stock-block'>"
             f"<h3>{r['ticker']}　{pct_html(r['change_pct'])}"
             f"（{t['close_label']} {r['close']:,.2f}）</h3>"
-            f"{md_to_html(a)}</div>"
+            f"{md_to_html(a)}{ev}</div>"
         )
 
     generated = NOW_LA.strftime("%Y-%m-%d %H:%M")
@@ -817,9 +905,25 @@ def main():
             print(f"  [警告] {tk} 無法取得價格")
 
     # 3) 新聞（每檔只抓一次）
-    print("抓取新聞…")
-    news_cache = {tk: news_for_ticker(tk) for tk in snaps}
-    market_news = "\n".join(google_news("stock market today when:1d", limit=10)) or "(none)"
+    news_days = int(cfg.get("news", {}).get("days", 3))
+    news_shown = int(cfg.get("news", {}).get("items_per_stock", 5))
+    print(f"抓取新聞（近 {news_days} 天，每檔取 {news_shown} 則）…")
+    news_cache = {tk: news_for_ticker(tk, days=news_days, top_n=news_shown)
+                  for tk in snaps}
+    market_news_items = google_news("stock market today", limit=8, days=news_days)
+    for tk, items in news_cache.items():
+        if len(items) < 3:
+            print(f"  [注意] {tk} 近 {news_days} 天僅取得 {len(items)} 則新聞，"
+                  f"報告會註明佐證不足")
+
+    # 各語言的市場對照數據（供個股做量化比較）
+    ctx_lines = {}
+    for lg in langs_needed:
+        idx = "\n".join(f"- {n[lg]}: {s['close']:,.2f} ({s['change_pct']:+.2f}%)"
+                        for n, s in index_snaps)
+        sec = "\n".join(f"- {s['ticker']} {n[lg]}: {s['change_pct']:+.2f}%"
+                        for n, s in sector_snaps)
+        ctx_lines[lg] = f"{idx}\n{sec}"
 
     # 4) AI：大盤摘要（每語言一次）＋ 個股分析（每檔每語言一次，全員共用）
     overview, analyses = {}, {}
@@ -828,7 +932,10 @@ def main():
             overview[lg] = f"(DRY_RUN placeholder market overview / {lg})"
         for tk in snaps:
             for lg in langs_needed:
-                analyses[(tk, lg)] = f"**DRY_RUN** placeholder analysis for {tk} ({lg})."
+                analyses[(tk, lg)] = (
+                    f"**主要原因**：DRY_RUN 佔位文字 [1][2][3]。\n\n"
+                    f"**產業鏈觀察**：{tk} placeholder.\n\n"
+                    f"**與大盤/類股的關係**：placeholder.\n\n**後續觀察**：placeholder.")
     else:
         for lg in langs_needed:
             print(f"AI：大盤摘要（{lg}）…")
@@ -836,14 +943,15 @@ def main():
                                   for n, s in index_snaps)
             sec_lines = "\n".join(f"- {s['ticker']} {n[lg]}: {s['change_pct']:+.2f}%"
                                   for n, s in sector_snaps)
-            overview[lg] = analyze_market(cfg, lg, idx_lines, sec_lines, market_news)
+            overview[lg] = analyze_market(cfg, lg, idx_lines, sec_lines,
+                                          news_for_prompt(market_news_items, lg))
             time.sleep(call_gap)
         need_pairs = sorted({(tk, lg) for s in subs for tk in s["tickers"]
                              for lg in s["langs"] if tk in snaps})
         for tk, lg in need_pairs:
             print(f"AI：分析 {tk}（{lg}）…")
             analyses[(tk, lg)] = analyze_stock(cfg, lg, snaps[tk],
-                                               overview[lg], news_cache.get(tk, []))
+                                               ctx_lines[lg], news_cache.get(tk, []))
             time.sleep(call_gap)
 
     # 5) 每位訂閱者：組報告 → PDF →（各語言）
@@ -863,7 +971,8 @@ def main():
             else:
                 synth = ""
             html = build_report_html(lg, sub, rows, failed, overview.get(lg, ""),
-                                     analyses, synth, index_snaps, sector_snaps)
+                                     analyses, synth, index_snaps, sector_snaps,
+                                     news_cache)
             path = f"output/brief_{safe_filename(sub['name'])}_{lg}_{TODAY}.pdf"
             HTML(string=html).write_pdf(path)
             pdfs[lg] = path
