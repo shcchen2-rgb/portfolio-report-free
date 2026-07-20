@@ -3,19 +3,29 @@
 # ============================================================
 
 ai:
-  # 預設 openai/gpt-4o-mini（免費額度最寬，約 150 次/天）
-  # 品質優先可改 openai/gpt-4.1（高階模型額度約 50 次/天，人少時才夠用）
-  model: openai/gpt-4o-mini
-  temperature: 0.4
-  seconds_between_calls: 5
+  # openai/gpt-4.1：分析品質明顯較好，能穩定遵守「引用新聞編號」等格式要求
+  #   免費額度約 50 次/天（整個 GitHub 帳號共用，含你其他專案）
+  # openai/gpt-4o-mini：額度約 150 次/天，但引用紀律與具體度較弱
+  #   訂閱人數變多、開始撞額度時再換回來
+  model: openai/gpt-4.1
 
-  # 全域 AI 呼叫預算：超過此數就用佔位文字降級，避免撞免費額度牆
-  # 注意額度是「整個 GitHub 帳號共用」，包含你的個人版報告與財經摘要專案
-  max_total_ai_calls: 140
+  # 溫度調低，減少 AI 自由發揮與腦補
+  temperature: 0.25
+  seconds_between_calls: 6
+
+  # 全域 AI 呼叫預算：超過就用佔位文字降級，避免撞額度牆整份報告開天窗
+  # 用 gpt-4.1 建議設 45；換回 gpt-4o-mini 可調到 140
+  max_total_ai_calls: 45
 
   # 每位訂閱者的「綜合觀察」段落（每人每語言多 1 次 AI 呼叫）
   # 訂閱人數多、額度吃緊時可改 false 關掉
   include_synthesis: true
+
+news:
+  # 新聞抓取期間（天）——只採用這段期間內的消息，程式會硬性過濾日期
+  days: 3
+  # 每檔股票列出幾則佐證新聞（AI 只能引用這幾則，編號與報告一致）
+  items_per_stock: 5
 
 subscribers:
   # 退訂名單：有人回信說不想收了，把 email 加在這裡（表單資料不用動）
