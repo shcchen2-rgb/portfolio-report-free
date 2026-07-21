@@ -671,9 +671,9 @@ strong { color: #111827; }
 
 
 def build_css(lang):
-    # 中文＝；英文＝綠漲紅跌（美國慣例）
+    # 中文＝紅漲綠跌（台灣慣例）；英文＝綠漲紅跌（美國慣例）
     if lang == "zh":
-        up, down = "#15803d", "#dc2626"
+        up, down = "#dc2626", "#15803d"
     else:
         up, down = "#15803d", "#dc2626"
     return CSS_TEMPLATE.replace("__UP_COLOR__", up).replace("__DOWN_COLOR__", down)
@@ -772,6 +772,11 @@ def send_all_emails(cfg, deliveries):
     pwd = os.environ["GMAIL_APP_PASSWORD"]
     sender_name = cfg.get("email", {}).get("sender_name", "Daily Stock Brief")
     ok = fail = 0
+    print(f"準備寄送給 {len(deliveries)} 位訂閱者：")
+    for d in deliveries:
+        pdf_langs = list(d["pdfs"].keys())
+        print(f"  - {d['sub']['name']} <{d['sub']['email']}>："
+              f"語言 {'+'.join(d['langs'])}，附件 {len(pdf_langs)} 份")
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         s.login(addr, pwd)
