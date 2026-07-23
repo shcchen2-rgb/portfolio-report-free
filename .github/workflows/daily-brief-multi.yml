@@ -1,11 +1,19 @@
 name: Daily Stock Brief (Multi-user)
 
+# 排程已改由外部觸發器（cron-job.org）於洛杉磯 16:10 準點呼叫 GitHub API 觸發，
+# 不再使用 GitHub 內建的 schedule（內建 schedule 會排隊延遲數十分鐘到數小時）。
+# cron-job.org 可設定時區為 America/Los_Angeles，日光節約自動處理，不需要兩組 cron。
 on:
-  schedule:
-    # 與個人版錯開 10 分鐘（洛杉磯 16:10），分散 Yahoo 資料抓取流量
-    - cron: "10 23 * * 1-5"   # 夏令 PDT：UTC 23:10 = 洛杉磯 16:10（週一～五）
-    - cron: "10 0 * * 2-6"    # 冬令 PST：UTC 00:10 = 洛杉磯前一日 16:10（週一～五）
-  workflow_dispatch:           # 手動觸發（測試用，休市日也會強制執行）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "執行模式（auto=正式，休市不寄；test=測試，休市也強制跑）"
+        type: choice
+        required: false
+        default: auto
+        options:
+          - auto
+          - test
 
 # models: read 讓 GITHUB_TOKEN 有權呼叫 GitHub Models 免費 AI
 permissions:
@@ -17,49 +25,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: 檢查洛杉磯時間（日光節約 guard）
-        id: tzguard
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "手動觸發，直接執行"
-            exit 0
-          fi
-          hour=$(TZ="America/Los_Angeles" date +%H)
-          echo "洛杉磯目前時間：$(TZ='America/Los_Angeles' date)"
-          if [ "$hour" = "16" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "非洛杉磯 16 點（日光節約另一組 cron），本次跳過"
-          fi
-
       - name: Checkout
-        if: steps.tzguard.outputs.run == 'true'
         uses: actions/checkout@v4
 
       - name: 安裝 Python
-        if: steps.tzguard.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: 安裝系統套件（PDF 引擎 + 中文字型）
-        if: steps.tzguard.outputs.run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fonts-noto-cjk
 
       - name: 安裝 Python 套件
-        if: steps.tzguard.outputs.run == 'true'
         run: pip install -r requirements_free.txt
 
       - name: 產生並寄送訂閱報告
-        if: steps.tzguard.outputs.run == 'true'
         env:
-          # 手動觸發＝測試模式：休市日也強制執行，分析最近一個交易日
-          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          # test 模式＝休市日也強制執行（分析最近一個交易日），auto 模式休市會自動跳過
+          FORCE: ${{ (inputs.mode || 'auto') == 'test' && '1' || '' }}
           # Google 表單回應試算表的 CSV 網址（沒設就改讀 subscribers.yaml）
           SUBSCRIBERS_CSV_URL: ${{ secrets.SUBSCRIBERS_CSV_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,7 +54,7 @@ jobs:
         run: python daily_brief_multi.py
 
       - name: 備份全部 PDF（保留 30 天）
-        if: steps.tzguard.outputs.run == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: briefs-${{ github.run_id }}
