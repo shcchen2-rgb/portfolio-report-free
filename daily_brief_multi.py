@@ -67,7 +67,7 @@ SECTORS = [
 # ------------------------------------------------------------
 L = {
     "zh": {
-        "title": "每日股票觀察報告",
+        "title": "投資組合觀察清單報告",
         "prepared_for": "專屬報告：",
         "sec_market": "一、大盤與總經",
         "sec_watchlist": "二、觀察清單總覽",
@@ -84,10 +84,10 @@ L = {
         "disclaimer": "本報告以量化市場數據（Yahoo Finance）與公開新聞來源自動彙整產生，分析內容經演算法生成、未經人工覆核，資料可能延遲或有誤。所有結論之依據皆已標註來源編號，敬請自行查證原文。本報告為一般性資訊，不構成投資建議、亦非任何證券之買賣邀約，不考量個別讀者之財務狀況或投資目標。投資決策請自行判斷並諮詢合格專業人士。",
         "email_intro": "您的每日股票觀察報告已產生（詳細分析請見附件 PDF）：",
         "email_unsub": "本報告為一般性資訊，不構成投資建議；完整聲明請見附件末頁。如需取消訂閱，直接回覆此信告知即可。",
-        "fmt_driver": "**主要原因**：…\n**產業鏈觀察**：…\n**與大盤/類股的關係**：…\n**後續觀察**：…",
+        "fmt_driver": "**主要原因**：…\n**產業鏈觀察**：…\n**與大盤/類股的關係**：…\n**後續變數**：…",
     },
     "en": {
-        "title": "Daily Stock Watchlist Brief",
+        "title": "Portfolio Watchlist Report",
         "prepared_for": "Prepared for: ",
         "sec_market": "1. Market & Macro",
         "sec_watchlist": "2. Watchlist Overview",
@@ -104,7 +104,7 @@ L = {
         "disclaimer": "This report is compiled automatically from quantitative market data (Yahoo Finance) and public news sources; the analysis is algorithmically generated and not reviewed by a human. Data may be delayed or inaccurate. Every conclusion is tagged to a numbered source — readers are encouraged to verify the originals. This is general information only, not investment advice or an offer to buy or sell any security, and does not consider any individual's financial situation or objectives. Please make your own decisions and consult a qualified professional.",
         "email_intro": "Your daily stock watchlist brief is ready (see the attached PDF for full analysis):",
         "email_unsub": "General information only — not investment advice. Full disclosures appear on the final page of the attached report. Reply to this email anytime to unsubscribe.",
-        "fmt_driver": "**Key driver**: …\n**Industry-chain view**: …\n**Versus market & sector**: …\n**What to watch**: …",
+        "fmt_driver": "**Key driver**: …\n**Industry-chain view**: …\n**Versus market & sector**: …\n**Upcoming items**: …",
     },
 }
 
@@ -464,14 +464,19 @@ MARKET_SYSTEM = {
            "2) 每個判斷都要附上實際數字（指數漲跌幅、殖利率水準、VIX 變化）；"
            "3) 點名具體事件（哪個數據、哪位官員、哪家公司財報），不要寫「市場觀望」「情緒謹慎」"
            "這類換成任何一天都成立的句子；4) 資料裡沒有的因果一律不要斷言，"
-           "找不到明確驅動因素就說今天缺乏單一主導題材。"),
+           "找不到明確驅動因素就說今天缺乏單一主導題材。\n"
+           "【用語紅線，違反即不合格】不得預測未來方向（如『有望反彈』『仍有下行風險』）；"
+           "不得使用『建議』『應』『訊號』『布局』等指示或操作字眼；只描述已發生的事實及其新聞依據。"),
     "en": ("You are a senior macro and US equity strategist writing for financially literate retail readers. "
            "You have NO web access; use only the closing data and numbered headlines provided.\n"
            "Requirements: 1) cite headlines as [n], at least 2 citations; 2) attach real figures to every "
            "judgement (index moves, yield levels, VIX change); 3) name specific events — which data release, "
            "which official, whose earnings — never filler like 'markets were cautious' that would fit any day; "
            "4) assert no causality absent from the material; if there is no clear driver, say the session "
-           "lacked a single dominant theme."),
+           "lacked a single dominant theme.\n"
+           "[Language red lines — violation = unacceptable] Never forecast future direction (e.g. 'poised to "
+           "rebound', 'downside risk remains'); never use 'recommend', 'should', 'signal', or 'position/buy' "
+           "wording; describe only what has already happened and its news basis."),
 }
 
 STOCK_SYSTEM = {
@@ -493,8 +498,15 @@ STOCK_SYSTEM = {
            "礦業要區分貴金屬（避險/利率邏輯）與工業金屬（景氣循環邏輯）。\n"
            "5. 誠實條款（最重要）：新聞中若找不到個股層級的催化劑，就直接寫「今日走勢主要由類股／"
            "大盤驅動，近三日新聞中無重大個股消息」。無法從提供資料推導的因果關係一律不要寫，"
-           "絕不編造財報數字、法說內容或分析師動作。\n\n"
-           "輸出：繁體中文 markdown，250–400 字，用下列四個粗體小標分段。"),
+           "絕不編造財報數字、法說內容或分析師動作。\n"
+           "6. 用語紅線（違反即不合格，最重要）：\n"
+           "   - 禁止規範性用語：不得出現『建議』『應』『須』『宜』『值得布局』等指示讀者行動的字眼。\n"
+           "   - 禁止方向性預測：不得預測未來股價方向，如『有望上漲』『估值修復可期』『仍有下行風險』"
+           "『可能反彈』。只陳述已發生的事實與其新聞依據，不對未來漲跌表態。\n"
+           "   - 禁止交易/操作語彙：不得使用『訊號』『買點』『逢低布局』『資金流入/流出』等操作暗示詞。\n"
+           "   - 轉述但不延伸：新聞中的分析師目標價、評級可如實轉述（屬新聞事實），"
+           "但不得加上自己的延伸推論，例如不可寫『顯示長線看好基本面』。\n\n"
+           "輸出：繁體中文 markdown，220–360 字，用下列四個粗體小標分段。"),
     "en": ("You are a senior buy-side industry analyst. Your readers are retail investors with basic "
            "financial literacy — they understand guidance, multiples, beta and sector rotation, so don't "
            "explain basics; do give them a defensible answer to 'why did this move today'.\n"
@@ -516,19 +528,36 @@ STOCK_SYSTEM = {
            "5. Honesty clause (most important): if no company-specific catalyst appears in the headlines, "
            "state plainly that the move mainly tracked the sector/market with no major company news in the "
            "past three days. Never infer beyond the provided material, and never invent earnings figures, "
-           "call transcripts or analyst actions.\n\n"
-           "Output: English markdown, 200–320 words, using the four bold sub-headings below."),
+           "call transcripts or analyst actions.\n"
+           "6. Language red lines (violation = unacceptable, most important):\n"
+           "   - No prescriptive language: never use 'recommend', 'should', 'ought to', 'worth buying/"
+           "accumulating', or any wording that tells the reader to act.\n"
+           "   - No directional forecasts: never predict future price direction (e.g. 'poised to rise', "
+           "'valuation recovery likely', 'downside risk remains', 'may rebound'). State only what has already "
+           "happened and its news basis; take no stance on future moves.\n"
+           "   - No trading/operational vocabulary: never use 'signal', 'entry point', 'buy the dip', "
+           "'fund inflow/outflow', or similar operational hints.\n"
+           "   - Transcribe, don't extend: analyst target prices and ratings from the news may be transcribed "
+           "as-is (they are news facts), but never add your own extrapolation such as 'showing long-term "
+           "confidence in fundamentals'.\n\n"
+           "Output: English markdown, 180–300 words, using the four bold sub-headings below."),
 }
 
 SYNTH_SYSTEM = {
-    "zh": ("你是一位資深投資策略分析師，為讀者的觀察清單做每日總結。你沒有上網能力，"
-           "只能依據提供的資料歸納。重點是跨個股的共同主題（同一供應鏈連動、同一總經因素、"
-           "資金輪動）。提到後續關注時只能依據提供資料中出現的資訊或一般性週期（財報季、"
-           "FOMC 例會），不要虛構具體日期。繁體中文 markdown。"),
-    "en": ("You are a senior investment strategist summarizing the reader's watchlist for the day. "
-           "No web access; use only the provided material. Focus on cross-stock themes (shared supply chains, "
-           "common macro drivers, rotation). For forward-looking items, mention only what appears in the provided "
-           "material or generic cycles (earnings season, FOMC schedule); never invent specific dates. English markdown."),
+    "zh": ("你是一位資深市場觀察者，為讀者的觀察清單做每日『描述性』彙整（不是投資建議）。"
+           "你沒有上網能力，只能依據提供的資料歸納。任務是客觀描述『今天這份清單發生了什麼』，"
+           "找出跨個股的共同主題（同一供應鏈連動、同一總經因素同時影響多檔）。\n"
+           "【用語紅線，違反即不合格】不得對未來方向表態（不得寫『後續看好』『值得留意的布局方向』等）；"
+           "不得使用『建議』『應』『訊號』『布局』等字；不得對個別讀者給出任何行動指引。"
+           "只描述已發生的事實與其成因，所有推論須有個股分析或新聞為依據。繁體中文 markdown。"),
+    "en": ("You are a senior market observer writing a DESCRIPTIVE daily wrap-up of the reader's watchlist "
+           "(not investment advice). No web access; use only the provided material. Your task is to objectively "
+           "describe what happened across this list today and surface cross-stock themes (shared supply chains, "
+           "one macro driver affecting several names).\n"
+           "[Language red lines — violation = unacceptable] Take no stance on future direction (no 'constructive "
+           "going forward', no 'positioning to watch'); never use 'recommend', 'should', 'signal', or 'position'; "
+           "give no action guidance to any individual reader. Describe only what has already happened and why, "
+           "with every inference grounded in the per-stock analysis or headlines. English markdown."),
 }
 
 
@@ -584,7 +613,7 @@ def analyze_stock(cfg, lang, snap, market_ctx, news_items):
 **主要原因**：（點出最可能的驅動因素，並用 [n] 標註佐證來源）
 **產業鏈觀察**：（指出精確的次產業定位與上下游／客戶連動，並用 [n] 佐證）
 **與大盤/類股的關係**：（寫出個股 % vs 類股 ETF % vs 大盤 % 的具體比較與判斷）
-**後續觀察**：（依據新聞中已出現的線索指出後續變數，不要虛構日期或事件）"""
+**後續變數**：（僅中性列舉新聞中已出現的待觀察事項或即將公布的事件，例如「財報預定於某日公布」；不得預測方向、不得使用建議／應／訊號等字，若新聞中無明確事件則寫「近三日新聞未提及特定後續事件」）"""
     else:
         user = f"""Stock: {snap['ticker']}
 Today's data (as of {snap['date']}): close {snap['close']:.2f}, change {snap['change_pct']:+.2f}%,
@@ -600,7 +629,7 @@ Explain why this stock moved today, strictly in this format (bold labels + text)
 **Key driver**: (the most likely catalyst, with [n] citations)
 **Industry-chain view**: (precise sub-industry positioning and supply-chain/customer linkages, cited)
 **Versus market & sector**: (explicit stock % vs sector ETF % vs index % comparison and conclusion)
-**What to watch**: (forward variables grounded in the headlines above — no invented dates or events)"""
+**Upcoming items**: (neutrally list only items or scheduled events already named in the headlines, e.g. "earnings due on X"; no direction forecast, no recommend/should/signal wording; if none appear, write "no specific upcoming events mentioned in the past 3 days")"""
     return call_ai(cfg, STOCK_SYSTEM[lang], user, lang, max_tokens=1400)
 
 
@@ -615,17 +644,23 @@ def synthesize(cfg, lang, sub_name, rows, analyses):
 
 {text}
 
-請寫「綜合觀察」（約 250–400 字）：1) 2–4 個跨個股的共同主題（供應鏈連動、共同總經因素、輪動方向）
-2) 這份清單今日整體表現一句話定調 3) 後續值得留意的方向（僅依據上面資料，不虛構日期）。
+請寫「綜合觀察」（約 250–380 字），只做客觀描述，不給任何方向建議：
+1) 開頭先用一句話做機械式統計（例：本清單 N 檔中 X 檔上漲、Y 檔下跌，其中以某類股跌幅最深）
+2) 2–4 個跨個股的共同主題（供應鏈連動、同一總經因素同時影響多檔），每個主題須對應到上面的個股分析
+3) 若要提到後續事件，只能中性列舉新聞中已出現的既定事件（如某檔財報日），不得寫「值得留意的方向」或任何看多看空的表態。
 直接輸出 markdown 內文。"""
     else:
         user = f"""Below are today's ({TODAY}) results and per-stock analysis excerpts for {sub_name}'s watchlist:
 
 {text}
 
-Write "Cross-Stock Themes" (180–300 words): 1) 2–4 themes cutting across these stocks
-(supply-chain linkages, shared macro drivers, rotation) 2) a one-line verdict on the list's overall day
-3) what to watch next (only from the material above; no invented dates). Markdown body only."""
+Write "Cross-Stock Themes" (180–280 words), purely descriptive with no directional advice:
+1) open with a one-line mechanical tally (e.g. "of N names, X rose and Y fell, with [sector] down most")
+2) 2–4 themes cutting across these stocks (supply-chain linkages, one macro driver hitting several names),
+each tied back to the per-stock analysis above
+3) if mentioning anything forward, only neutrally list already-scheduled events named in the news
+(e.g. an earnings date); never write "what to watch" as a view or take any bullish/bearish stance.
+Markdown body only."""
     return call_ai(cfg, SYNTH_SYSTEM[lang], user, lang, max_tokens=1200)
 
 
@@ -786,11 +821,11 @@ def send_all_emails(cfg, deliveries):
             main_lang = langs[0]
             t = L[main_lang]
             if len(langs) == 2:
-                subject = f"📈 每日股票觀察報告 / Daily Stock Brief {TODAY}"
+                subject = f"📈 投資組合觀察清單報告 / Portfolio Watchlist Report {TODAY}"
             elif main_lang == "zh":
-                subject = f"📈 每日股票觀察報告 {TODAY}"
+                subject = f"📈 投資組合觀察清單報告 {TODAY}"
             else:
-                subject = f"📈 Daily Stock Watchlist Brief {TODAY}"
+                subject = f"📈 Portfolio Watchlist Report {TODAY}"
 
             wl = "".join(
                 f"<tr><td>{r['ticker']}</td><td style='text-align:right'>{r['close']:,.2f}</td>"
@@ -945,7 +980,7 @@ def main():
                 analyses[(tk, lg)] = (
                     f"**主要原因**：DRY_RUN 佔位文字 [1][2][3]。\n\n"
                     f"**產業鏈觀察**：{tk} placeholder.\n\n"
-                    f"**與大盤/類股的關係**：placeholder.\n\n**後續觀察**：placeholder.")
+                    f"**與大盤/類股的關係**：placeholder.\n\n**後續變數**：placeholder.")
     else:
         for lg in langs_needed:
             print(f"AI：大盤摘要（{lg}）…")
