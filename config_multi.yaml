@@ -3,22 +3,30 @@
 # ============================================================
 
 ai:
-  # openai/gpt-4.1：分析品質明顯較好，能穩定遵守「引用新聞編號」等格式要求
-  #   免費額度約 50 次/天（整個 GitHub 帳號共用，含你其他專案）
-  # openai/gpt-4o-mini：額度約 150 次/天，但引用紀律與具體度較弱
-  #   訂閱人數變多、開始撞額度時再換回來
-  model: openai/gpt-4.1
+  # claude-haiku-4-5：最便宜。1 位訂閱者約 26 次呼叫/天（不到 US$2/月），
+  #   30 位訂閱者約 180 次（約 US$13/月）
+  #
+  # 想要更好的引用紀律與具體度可改成 claude-sonnet-5（約貴一倍）。
+  # ⚠️ 注意：Sonnet 5 與 Opus 5 不接受 temperature 參數，換過去要把下面
+  #    temperature 那一行刪掉，否則 API 會回 400 錯誤。
+  model: claude-haiku-4-5
 
   # 溫度調低，減少 AI 自由發揮與腦補
   temperature: 0.25
-  seconds_between_calls: 6
 
-  # 全域 AI 呼叫預算：超過就用佔位文字降級，避免撞額度牆整份報告開天窗
-  # 用 gpt-4.1 建議設 45；換回 gpt-4o-mini 可調到 140
-  max_total_ai_calls: 45
+  # Anthropic 的速率限制比之前寬鬆，間隔可以縮短，整體執行時間會明顯下降
+  seconds_between_calls: 2
+
+  # 全域 AI 呼叫預算（花費上限）：超過就用佔位文字降級。
+  # 這是帳單的安全閥——訂閱人數暴增時不會無限制地花錢。
+  # 對照：1 人約 26 次、30 人約 180 次。設 200 可撐滿 max_subscribers。
+  max_total_ai_calls: 200
 
   # 每位訂閱者的「綜合觀察」段落（每人每語言多 1 次 AI 呼叫）
-  # 訂閱人數多、額度吃緊時可改 false 關掉
+  #
+  # ⚠️ 這是唯一「隨訂閱人數線性成長」的成本項目：個股分析全員共用（會飽和），
+  #    但 synthesis 是每人一次。訂閱破百時這裡會佔總呼叫數的三分之一，
+  #    要壓成本就先關這個。
   include_synthesis: true
 
 news:
@@ -32,7 +40,7 @@ subscribers:
   blocklist:
     # - someone@example.com
 
-  # 安全閥：一天最多寄給幾人，避免表單被大量填寫時爆掉額度
+  # 安全閥：一天最多寄給幾人，避免表單被大量填寫時爆掉 AI 帳單
   max_subscribers: 30
 
 email:

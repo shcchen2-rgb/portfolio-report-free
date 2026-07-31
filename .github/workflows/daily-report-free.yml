@@ -8,10 +8,8 @@ on:
     - cron: "0 0 * * 2-6"    # 冬令 PST：UTC 00:00 = 洛杉磯前一日 16:00（週一～五）
   workflow_dispatch:          # 允許手動觸發（測試用）
 
-# ★ models: read 是免費版的關鍵——讓 GITHUB_TOKEN 有權呼叫 GitHub Models
 permissions:
   contents: read
-  models: read
 
 jobs:
   report:
@@ -61,7 +59,7 @@ jobs:
         env:
           # 手動觸發（Run workflow）＝測試模式：休市日也強制執行，分析最近一個交易日
           FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
