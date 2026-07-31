@@ -3,10 +3,10 @@
 """
 每日股票觀察報告【多人訂閱版】
 - 每個訂閱者：自己的 email、語言（zh / en / both）、觀察清單（上限 15 檔）
-- AI 引擎：GitHub Models（免費）；同一檔股票同一語言只分析一次，所有訂閱者共用（省額度）
+- AI 引擎：Anthropic API；同一檔股票同一語言只分析一次，所有訂閱者共用（省成本）
 - 每人收到個人化 PDF（中文＝紅漲綠跌、英文＝綠漲紅跌）
 
-環境變數：GITHUB_TOKEN（Actions 自動）、GMAIL_ADDRESS、GMAIL_APP_PASSWORD
+環境變數：ANTHROPIC_API_KEY、GMAIL_ADDRESS、GMAIL_APP_PASSWORD
 測試：DRY_RUN=1（跳過 AI 與寄信）、FORCE=1（休市日強制執行）
 """
 
@@ -26,6 +26,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import yaml
+import anthropic
 import requests
 import feedparser
 import yfinance as yf
@@ -41,7 +42,6 @@ TODAY = NOW_LA.date()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 FORCE = os.environ.get("FORCE") == "1"
 
-GH_MODELS_URL = "https://models.github.ai/inference/chat/completions"
 MAX_TICKERS_PER_SUB = 15
 
 INDEXES = [
@@ -397,64 +397,55 @@ def news_html(items, lang):
 
 
 # ------------------------------------------------------------
-# AI（GitHub Models，全域額度預算）
+# AI（Anthropic API，全域花費預算）
 # ------------------------------------------------------------
 _quota_exhausted = False
 _ai_calls_used = 0
+_ai_client = None
 QUOTA_MSG = {
-    "zh": "（今日 AI 免費額度已用完，此段分析略過）",
-    "en": "(Daily free AI quota exhausted; this section was skipped.)",
+    "zh": "（本次 AI 呼叫已達設定的上限，此段分析略過）",
+    "en": "(AI call budget for this run was reached; this section was skipped.)",
 }
 
 
 def call_ai(cfg, system, user, lang, max_tokens=1200):
-    global _quota_exhausted, _ai_calls_used
-    budget = int(cfg["ai"].get("max_total_ai_calls", 140))
+    global _quota_exhausted, _ai_calls_used, _ai_client
+    budget = int(cfg["ai"].get("max_total_ai_calls", 200))
     if _quota_exhausted or _ai_calls_used >= budget:
+        _quota_exhausted = True
         return QUOTA_MSG[lang]
 
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return "(Missing GITHUB_TOKEN — check workflow permissions: models: read)"
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return "(Missing ANTHROPIC_API_KEY — set it in GitHub Secrets or .env.sh)"
 
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "model": cfg["ai"]["model"],
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": float(cfg["ai"].get("temperature", 0.4)),
-    }
+    if _ai_client is None:
+        _ai_client = anthropic.Anthropic()
 
-    for attempt in range(4):
-        try:
-            r = requests.post(GH_MODELS_URL, headers=headers, json=payload, timeout=180)
-            if r.status_code == 200:
-                _ai_calls_used += 1
-                return r.json()["choices"][0]["message"]["content"].strip()
-            if r.status_code == 429:
-                try:
-                    wait = int(r.headers.get("Retry-After", "30"))
-                except ValueError:
-                    wait = 30
-                if wait > 300:
-                    print(f"  [限流] 當日免費額度用完（需等 {wait} 秒）")
-                    _quota_exhausted = True
-                    return QUOTA_MSG[lang]
-                print(f"  [限流] 429，等待 {wait} 秒重試（第 {attempt + 1} 次）")
-                time.sleep(wait + 2)
-                continue
-            if r.status_code in (401, 403):
-                print(f"  [錯誤] 權限不足 HTTP {r.status_code}：{r.text[:300]}")
-                return "(GitHub Models permission error — check permissions: models: read)"
-            print(f"  [警告] AI 呼叫失敗 HTTP {r.status_code}：{r.text[:300]}")
-            time.sleep(10 * (attempt + 1))
-        except Exception as e:
-            print(f"  [警告] AI 呼叫錯誤：{e}")
-            time.sleep(10 * (attempt + 1))
-    return "(AI analysis failed — see Actions log.)"
+    # SDK 內建 429／連線錯誤的指數退避重試，不需要自己寫重試迴圈
+    try:
+        resp = _ai_client.messages.create(
+            model=cfg["ai"]["model"],
+            max_tokens=max_tokens,
+            temperature=float(cfg["ai"].get("temperature", 0.4)),
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        _ai_calls_used += 1
+        return resp.content[0].text.strip()
+    except anthropic.AuthenticationError as e:
+        print(f"  [錯誤] API key 無效：{e}")
+        _quota_exhausted = True   # key 錯了後面每次都會錯，直接停手不要空轉
+        return "(ANTHROPIC_API_KEY is invalid or revoked.)"
+    except anthropic.APIStatusError as e:
+        # 402 = 帳戶額度用完需儲值；429 重試後仍失敗也會走到這裡
+        print(f"  [錯誤] AI 呼叫失敗 HTTP {e.status_code}：{str(e)[:300]}")
+        if e.status_code in (402, 429):
+            _quota_exhausted = True
+            return QUOTA_MSG[lang]
+        return "(AI analysis failed — see log.)"
+    except Exception as e:
+        print(f"  [警告] AI 呼叫錯誤：{e}")
+        return "(AI analysis failed — see log.)"
 
 
 MARKET_SYSTEM = {
@@ -873,7 +864,7 @@ def main():
 
     print(f"=== {TODAY} 每日股票觀察報告（多人訂閱版）===")
     print(f"訂閱者 {len(subs)} 人｜語言 {langs_needed}｜不重複股票 {len(unique_tickers)} 檔")
-    print(f"預估 AI 呼叫數：{est_calls}（免費額度約 150 次/天，全帳號共用）")
+    print(f"預估 AI 呼叫數：{est_calls}（上限 {cfg['ai'].get('max_total_ai_calls', 200)} 次）")
     if est_calls > int(cfg["ai"].get("max_total_ai_calls", 140)):
         print("  [警告] 預估用量超過預算上限，超出的部分會顯示「額度已用完」佔位文字")
 

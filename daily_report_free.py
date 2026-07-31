@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-每日投資組合分析報告【免費版】
-AI 引擎：GitHub Models（Actions 內建 GITHUB_TOKEN，零成本、免申請 API key）
+每日投資組合分析報告【個人版】
+AI 引擎：Anthropic API（Claude）
 與付費版差異：AI 無法上網搜尋查證，只能依據 RSS 新聞標題與市場數據推論
 
-流程：讀取持股 → 抓價格/指數/類股/新聞 → GitHub Models 逐檔分析 → PDF → Email
+流程：讀取持股 → 抓價格/指數/類股/新聞 → Claude 逐檔分析 → PDF → Email
 
 需要的環境變數：
-  GITHUB_TOKEN        Actions 自動提供（workflow 需設 permissions: models: read）
+  ANTHROPIC_API_KEY   Anthropic API 金鑰（Actions 存在 Secrets，本機存在 .env.sh）
   GMAIL_ADDRESS       寄件 Gmail 帳號
   GMAIL_APP_PASSWORD  Gmail 應用程式密碼（不是登入密碼）
   RECIPIENT_EMAIL     收件人（選填，不填就寄給自己）
@@ -30,7 +30,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import yaml
-import requests
+import anthropic
 import feedparser
 import yfinance as yf
 import markdown as md_lib
@@ -45,9 +45,8 @@ TODAY = NOW_LA.date()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 FORCE = os.environ.get("FORCE") == "1"
 
-GH_MODELS_URL = "https://models.github.ai/inference/chat/completions"
-QUOTA_MSG = ("（今日 GitHub Models 免費額度已用完，此段分析略過。"
-             "持股檔數較多時可減少檔數，或改用付費版）")
+QUOTA_MSG = ("（本次 AI 呼叫已達設定的上限，此段分析略過。"
+             "如需分析更多檔數，請調高 config_free.yaml 的 max_total_ai_calls）")
 
 INDEXES = [
     ("^GSPC", "S&P 500"),
@@ -129,7 +128,7 @@ def market_was_open_today():
 
 # ------------------------------------------------------------
 # 新聞（Google News RSS）
-# 免費版沒有 AI 網路搜尋，新聞標題是 AI 唯一的資訊來源，
+# AI 沒有網路搜尋能力，新聞標題是它唯一的資訊來源，
 # 所以抓多一點（12 則），抓不夠時自動放寬到近 2 天
 # ------------------------------------------------------------
 def google_news(query, lang="en", limit=12):
@@ -173,70 +172,54 @@ def news_for_holding(h):
 
 
 # ------------------------------------------------------------
-# AI 分析（GitHub Models 免費 API）
-# 免費額度（每個 GitHub 帳號）：mini 級模型約 150 次/天，
-# 每次請求上限 8K tokens 輸入 / 4K 輸出，所以輸入都有做裁切
+# AI 分析（Anthropic API）
+# max_total_ai_calls 是「花費上限」而不是免費額度：超過就用佔位文字降級，
+# 避免持股檔數暴增時帳單失控。實際用量會在執行結束時印出來。
 # ------------------------------------------------------------
 _quota_exhausted = False
+_ai_calls_used = 0
+_ai_client = None
 
 
 def call_ai(cfg, system, user, max_tokens=1200):
-    global _quota_exhausted
-    if _quota_exhausted:
+    global _quota_exhausted, _ai_calls_used, _ai_client
+    budget = int(cfg["ai"].get("max_total_ai_calls", 60))
+    if _quota_exhausted or _ai_calls_used >= budget:
+        _quota_exhausted = True
         return QUOTA_MSG
 
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return ("（找不到 GITHUB_TOKEN。請確認 workflow 的 permissions 區塊"
-                "有 models: read，且 env 有帶入 GITHUB_TOKEN）")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return ("（找不到 ANTHROPIC_API_KEY。GitHub Actions 請到 Settings → "
+                "Secrets and variables → Actions 新增；本機請設在 .env.sh）")
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": cfg["ai"]["model"],
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": float(cfg["ai"].get("temperature", 0.4)),
-    }
+    if _ai_client is None:
+        _ai_client = anthropic.Anthropic()
 
-    for attempt in range(4):
-        try:
-            r = requests.post(GH_MODELS_URL, headers=headers,
-                              json=payload, timeout=180)
-            if r.status_code == 200:
-                data = r.json()
-                return data["choices"][0]["message"]["content"].strip()
-
-            if r.status_code == 429:
-                try:
-                    wait = int(r.headers.get("Retry-After", "30"))
-                except ValueError:
-                    wait = 30
-                if wait > 300:  # 等待超過 5 分鐘 = 當日額度用完，不再硬等
-                    print(f"  [限流] 當日免費額度已用完（需等 {wait} 秒重置）")
-                    _quota_exhausted = True
-                    return QUOTA_MSG
-                print(f"  [限流] 429，等待 {wait} 秒後重試（第 {attempt + 1} 次）")
-                time.sleep(wait + 2)
-                continue
-
-            if r.status_code in (401, 403):
-                print(f"  [錯誤] 權限不足 HTTP {r.status_code}：{r.text[:300]}")
-                return ("（GitHub Models 權限錯誤：請確認 workflow 的 "
-                        "permissions 有 models: read）")
-
-            print(f"  [警告] AI 呼叫失敗 HTTP {r.status_code}：{r.text[:300]}")
-            time.sleep(10 * (attempt + 1))
-        except Exception as e:
-            print(f"  [警告] AI 呼叫錯誤：{e}")
-            time.sleep(10 * (attempt + 1))
-
-    return "（AI 分析產生失敗，請至 GitHub Actions 查看日誌）"
+    # SDK 內建 429／連線錯誤的指數退避重試，不需要自己寫重試迴圈
+    try:
+        resp = _ai_client.messages.create(
+            model=cfg["ai"]["model"],
+            max_tokens=max_tokens,
+            temperature=float(cfg["ai"].get("temperature", 0.4)),
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        _ai_calls_used += 1
+        return resp.content[0].text.strip()
+    except anthropic.AuthenticationError as e:
+        print(f"  [錯誤] API key 無效：{e}")
+        _quota_exhausted = True   # key 錯了，後面每檔都會錯，直接停手不要空轉
+        return "（ANTHROPIC_API_KEY 無效或已撤銷，請重新產生一組）"
+    except anthropic.APIStatusError as e:
+        # 402 = 額度用完需儲值；429 重試後仍失敗也會走到這裡
+        print(f"  [錯誤] AI 呼叫失敗 HTTP {e.status_code}：{str(e)[:300]}")
+        if e.status_code in (402, 429):
+            _quota_exhausted = True
+            return QUOTA_MSG
+        return "（AI 分析產生失敗，請查看執行日誌）"
+    except Exception as e:
+        print(f"  [警告] AI 呼叫錯誤：{e}")
+        return "（AI 分析產生失敗，請查看執行日誌）"
 
 
 MARKET_SYSTEM = (
@@ -318,7 +301,7 @@ def analyze_stock(cfg, h, snap, market_overview, peer_line, news_items):
 
 
 def synthesize(cfg, market_overview, pnl_line, stock_sections):
-    # 免費版每次請求輸入上限約 8K tokens，逐檔分析先裁切再彙整
+    # 控制輸入長度以節省 token 成本，逐檔分析先裁切再彙整
     parts = []
     for r, a in stock_sections:
         parts.append(f"### {r['ticker']} {r['name']}（{r['change_pct']:+.2f}%）\n{a[:500]}")
@@ -417,7 +400,7 @@ def md_to_html(text):
 def build_report_html(cfg, index_snaps, sector_snaps, holding_rows, totals,
                       market_overview, stock_sections, synthesis):
     css = build_css(cfg)
-    title = cfg.get("report", {}).get("title", "每日投資組合分析報告（免費版）")
+    title = cfg.get("report", {}).get("title", "每日投資組合分析報告")
 
     idx_rows = "".join(
         f"<tr><td>{name}</td><td>{s['close']:,.2f}</td><td>{pct_html(s['change_pct'])}</td></tr>"
@@ -459,7 +442,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows, totals,
 <body>
 <div class="header">
   <h1>{title}</h1>
-  <div class="subtitle">{TODAY}（洛杉磯時間）｜產生時間 {generated} PT｜資料來源：Yahoo Finance、Google News、GitHub Models AI（免費版，未經網路查證）</div>
+  <div class="subtitle">{TODAY}（洛杉磯時間）｜產生時間 {generated} PT｜資料來源：Yahoo Finance、Google News、Claude AI（未經網路查證）</div>
 </div>
 
 <h2>一、大盤與總經</h2>
@@ -480,7 +463,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows, totals,
 <h2>四、綜合觀察與後續關注</h2>
 {md_to_html(synthesis)}
 
-<div class="disclaimer">本報告由自動化系統產生（免費版：AI 僅依據新聞標題與價量數據推論，未經網路查證），僅供個人參考，不構成任何投資建議。價格與新聞資料可能有延遲或錯誤，重大決策請以官方來源為準。</div>
+<div class="disclaimer">本報告由自動化系統產生（AI 僅依據新聞標題與價量數據推論，未經網路查證），僅供個人參考，不構成任何投資建議。價格與新聞資料可能有延遲或錯誤，重大決策請以官方來源為準。</div>
 </body></html>"""
     return html
 
@@ -493,7 +476,7 @@ def send_email(cfg, pdf_path, holding_rows, totals):
     pwd = os.environ["GMAIL_APP_PASSWORD"]
     to = os.environ.get("RECIPIENT_EMAIL") or addr
 
-    subject = f"{cfg.get('email', {}).get('subject_prefix', '每日投資組合分析（免費版）')} {TODAY}"
+    subject = f"{cfg.get('email', {}).get('subject_prefix', '每日投資組合分析')} {TODAY}"
 
     lines = "".join(
         f"<tr><td>{r['ticker']}</td><td style='text-align:right'>{r['close']:,.2f}</td>"
@@ -534,7 +517,7 @@ def send_email(cfg, pdf_path, holding_rows, totals):
 def main():
     cfg = load_yaml("config_free.yaml")
     holdings = load_yaml("portfolio.yaml")["holdings"]
-    print(f"=== {TODAY} 每日投資組合報告（免費版）===")
+    print(f"=== {TODAY} 每日投資組合報告 ===")
     print(f"持股數：{len(holdings)}　模型：{cfg['ai']['model']}　DRY_RUN={DRY_RUN}")
 
     if not FORCE and not market_was_open_today():
@@ -594,7 +577,7 @@ def main():
     print("抓取市場新聞…")
     market_news = "\n".join(google_news("stock market today when:1d", limit=10)) or "（無）"
 
-    # 4) AI 分析（GitHub Models）
+    # 4) AI 分析（Anthropic API）
     call_gap = float(cfg["ai"].get("seconds_between_calls", 5))
     if DRY_RUN:
         market_overview = "（DRY_RUN 測試模式：此處為大盤摘要占位文字）"
@@ -627,6 +610,7 @@ def main():
     pdf_path = f"output/portfolio_report_free_{TODAY}.pdf"
     HTML(string=html).write_pdf(pdf_path)
     print(f"PDF 已產生：{pdf_path}（{os.path.getsize(pdf_path) / 1024:.0f} KB）")
+    print(f"AI 實際用量：{_ai_calls_used} 次")
 
     # 6) Email
     if DRY_RUN:

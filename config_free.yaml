@@ -1,28 +1,32 @@
 # ============================================================
-# 系統設定【免費版】
-# AI 引擎：GitHub Models（零成本，Actions 自動提供 GITHUB_TOKEN）
+# 系統設定【個人版】
+# AI 引擎：Anthropic API（需要 ANTHROPIC_API_KEY）
 # ============================================================
 
 report:
-  title: "每日投資組合分析報告（免費版）"
+  title: "每日投資組合分析報告"
   # 漲跌顏色慣例：tw = 紅漲綠跌（台灣習慣）, us = 綠漲紅跌（美國習慣）
   color_convention: us
 
 ai:
-  # 預設 openai/gpt-4o-mini：免費額度最寬（約 150 次/天），
-  # 你前一個財經摘要專案用的也是它，確定能跑
+  # claude-haiku-4-5：最便宜，12 檔持股一天約 14 次呼叫，一個月不到 US$2
   #
-  # 想試更強的模型可改成 openai/gpt-4.1（分析品質較好，
-  # 但高階模型免費額度降到約 50 次/天——10 檔持股約用 12 次，仍夠用）
-  # 注意：GitHub Models 的模型目錄會變動，若執行時出現
-  # unknown model 之類的錯誤，改回 openai/gpt-4o-mini 即可
-  model: openai/gpt-4o-mini
+  # 想要更好的分析品質可改成 claude-sonnet-5（約貴一倍）。
+  # ⚠️ 注意：Sonnet 5 與 Opus 5 不接受 temperature 參數，換過去要把下面
+  #    temperature 那一行刪掉，否則 API 會回 400 錯誤。
+  model: claude-haiku-4-5
 
-  # 溫度：越低越保守，減少 AI 腦補（免費版沒有網路查證，建議偏低）
+  # 溫度：越低越保守，減少 AI 腦補（沒有網路查證能力，建議偏低）
   temperature: 0.4
 
-  # 每次 AI 呼叫之間隔幾秒（免費額度有每分鐘次數限制，別調太低）
-  seconds_between_calls: 5
+  # 每次 AI 呼叫之間隔幾秒。Anthropic 的速率限制比之前寬鬆，
+  # 但留一點間隔可避免撞到每分鐘上限
+  seconds_between_calls: 2
+
+  # 花費上限：一次執行最多呼叫幾次 AI，超過就用佔位文字降級。
+  # 這是帳單的安全閥——持股檔數暴增時不會無限制地花錢。
+  # 12 檔持股約用 14 次，設 60 有充裕餘裕。
+  max_total_ai_calls: 60
 
 email:
-  subject_prefix: "📊 每日投資組合分析（免費版）"
+  subject_prefix: "📊 每日投資組合分析"

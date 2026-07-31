@@ -15,10 +15,8 @@ on:
           - auto
           - test
 
-# models: read 讓 GITHUB_TOKEN 有權呼叫 GitHub Models 免費 AI
 permissions:
   contents: read
-  models: read
 
 jobs:
   report:
@@ -48,7 +46,7 @@ jobs:
           FORCE: ${{ (inputs.mode || 'auto') == 'test' && '1' || '' }}
           # Google 表單回應試算表的 CSV 網址（沒設就改讀 subscribers.yaml）
           SUBSCRIBERS_CSV_URL: ${{ secrets.SUBSCRIBERS_CSV_URL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python daily_brief_multi.py
