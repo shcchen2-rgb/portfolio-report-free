@@ -5,6 +5,8 @@
 #
 #   ticker : Yahoo Finance 代號（美股直接打代號；台股上市 .TW、上櫃 .TWO）
 #   name   : 顯示名稱（用公司英文原名，報告不做中文翻譯）
+#   aliases: 選填。新聞常用但不在 name 裡的稱呼（如 Alphabet 的新聞都寫 Google）。
+#            新聞佐證的相關性過濾會一併比對，漏了會導致該公司的新聞被濾掉
 #   shares : 持有股數（保留紀錄用，報告已不使用）
 #   notes  : 產業定位、上下游供應鏈、日常股價驅動因素、與其他持股的連動
 # ============================================================
@@ -37,11 +39,13 @@ holdings:
 
   - ticker: FCX
     name: Freeport-McMoRan
+    aliases: [Freeport]
     shares: 1
     notes: "全球最大上市銅礦商之一（副產黃金、鉬），核心資產：美國亞利桑那礦區、秘魯 Cerro Verde、印尼 Grasberg 世界級銅金礦。股價高度連動銅價：中國製造業景氣（PMI）、電網／電動車／AI 資料中心用銅需求、美元走勢（反向）。個股面：Grasberg 2025 年泥流事故後的復產進度與產量指引、印尼出口許可與冶煉政策。與 NEM 同板塊不同邏輯（銅＝景氣、金＝避險）；銅價因 AI 資料中心題材上漲時，會與 NVDA 等 AI 持股出現同向連動。"
 
   - ticker: GOOG
     name: Alphabet
+    aliases: [Google]
     shares: 1
     notes: "Alphabet：搜尋＋YouTube 廣告為獲利主體，Google Cloud 為成長引擎，加上 Gemini AI、Waymo 自駕、自研 TPU 晶片（與 AVGO 共同設計——直接的持股連動點）。驅動：數位廣告景氣、雲端成長與 AI 商業化進展、「AI 顛覆搜尋」敘事的多空拉鋸、反壟斷訴訟進展（搜尋案救濟措施、廣告技術案）、AI capex 規模（Google 上調 capex 時同時利多 NVDA／AVGO／CIEN 等供應鏈持股，對 GOOG 本身則有獲利率壓力的兩面解讀）。"
 

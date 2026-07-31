@@ -169,36 +169,55 @@ def google_news(query, lang="en", limit=12, days=3):
     return items
 
 
-def is_relevant(title, ticker, name):
-    """標題是否真的在講這家公司。
+# 這份報告只涵蓋美股與台股。代號在各國交易所會重複（NEM 在美國是金礦商
+# Newmont，在德國 XETRA 是軟體商 Nemetschek），標題若把代號標成外國交易所，
+# 就一定不是我們要的那家公司。
+FOREIGN_EXCHANGES = (
+    "XTRA|ETR|FRA|BER|MUN|STU|HAM|SWX|VTX|EPA|AMS|BIT|BME|LIS|"
+    "STO|CPH|HEL|OSL|WSE|PRA|IST|LON|LSE|TSE|TYO|HKG|SHA|SHE|"
+    "KRX|KOSDAQ|NSE|BSE|JSE|BVMF|TSX|TSXV|CVE|ASX|NZE|SGX|IDX|BKK|KLSE"
+)
 
-    只用子字串比對會誤判：'NEM' in 'NEMETSCHEK' 是 True，
-    於是德國軟體商 Nemetschek 的新聞被當成金礦商 Newmont 的佐證。
-    代號改用字界比對，公司名另外用具辨識度的詞彙比對。
+
+def _word_in(text, word):
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])",
+                          text, re.I))
+
+
+def is_relevant(title, ticker, name, aliases=()):
+    """標題是否真的在講這家美股／台股公司。
+
+    兩層判斷：
+    1. 標題把代號標成外國交易所（如 'Nemetschek (XTRA:NEM)'）→ 直接排除，
+       除非公司名也對得上。
+    2. 代號用字界比對（避免 'NEM' 命中 'NEMETSCHEK'），或公司名／別名對得上。
+
+    別名是為了品牌名與法人名不同的情況：GOOG 的名稱是 Alphabet，
+    但新聞標題幾乎都寫 Google，沒有別名就會把相關新聞全部濾掉。
     """
     code = ticker.split(".")[0]
-    if re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", title, re.I):
-        return True
-    # 公司名取長度 >= 4 的詞（避免 'Inc'、'Co' 這種通用字誤中）
-    for token in re.split(r"[^A-Za-z0-9一-鿿]+", name or ""):
-        if len(token) >= 4 and re.search(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])",
-                                         title, re.I):
-            return True
-    return False
+    words = []
+    for term in [name or ""] + list(aliases or ()):
+        words += re.split(r"[^A-Za-z0-9一-鿿]+", term)
+    name_hit = any(len(tok) >= 4 and _word_in(title, tok) for tok in words)
+    if re.search(rf"(?:{FOREIGN_EXCHANGES})\s*:\s*{re.escape(code)}\b", title, re.I):
+        return name_hit
+    return _word_in(title, code) or name_hit
 
 
-def rank_news(items, ticker, name, top_n):
+def rank_news(items, ticker, name, top_n, aliases=()):
     """先濾掉不是在講這家公司的標題，再依日期新到舊排序。
 
     寧可佐證則數不足，也不要塞進錯誤的新聞——錯的佐證比沒有佐證更糟。
     """
-    relevant = [it for it in items if is_relevant(it["title"], ticker, name)]
+    relevant = [it for it in items if is_relevant(it["title"], ticker, name, aliases)]
     return sorted(relevant, key=lambda it: it.get("date", ""), reverse=True)[:top_n]
 
 
 def news_for_holding(h, days=3, top_n=5):
     """先抓近三日；若相關的則數不足，再放寬到近七日補足（寧可舊，不可錯）"""
     t, name = h["ticker"], h.get("name", "")
+    aliases = h.get("aliases") or ()
     code = t.split(".")[0]
 
     def fetch(d):
@@ -206,9 +225,9 @@ def news_for_holding(h, days=3, top_n=5):
             return google_news(f"{code} 股價", lang="zh", days=d)
         return google_news(f"{t} stock", lang="en", days=d)
 
-    picked = rank_news(fetch(days), t, name, top_n)
+    picked = rank_news(fetch(days), t, name, top_n, aliases)
     if len(picked) < top_n:
-        wider = rank_news(fetch(7), t, name, top_n)
+        wider = rank_news(fetch(7), t, name, top_n, aliases)
         if len(wider) > len(picked):
             picked = wider
     return picked
@@ -341,7 +360,7 @@ def analyze_market(cfg, index_lines, sector_lines, market_news):
 1. 今天美股整體表現與主要驅動因素（依據上面的新聞標題，要具體）
 2. 類股輪動：哪些 sector 強、哪些弱、可能原因
 3. 公債殖利率與 VIX 的變化反映了什麼市場情緒
-直接輸出 markdown 內文，不需要大標題。"""
+直接輸出 markdown 內文。不要加任何標題行（報表已有大標，重複會佔掉版面）。"""
     return call_ai(cfg, MARKET_SYSTEM, user, max_tokens=1200)
 
 
@@ -389,7 +408,7 @@ def synthesize(cfg, market_overview, stock_sections):
 1. 3–5 個跨標的的共同主題（同一供應鏈連動、同一總經因素、資金輪動方向）
 2. 今天這組標的整體表現的一句話定調
 3. 後續值得留意的方向（只能依據上面資料中出現的資訊，不要虛構日期）
-直接輸出 markdown 內文，不需要大標題。"""
+直接輸出 markdown 內文。不要加任何標題行（報表已有大標，重複會佔掉版面）。"""
     return call_ai(cfg, SYNTH_SYSTEM, user, max_tokens=1500)
 
 
@@ -413,18 +432,28 @@ body {
 .header { border-bottom: 3px solid #166534; padding-bottom: 10px; margin-bottom: 18px; }
 h1 { font-size: 19pt; color: #166534; margin: 0 0 4px 0; }
 .subtitle { color: #6b7280; font-size: 9.5pt; }
-h2 {
+/* 只有報表自己的四個大標才換頁。
+   AI 產出的 markdown 常自帶標題（會被轉成 h2/h3），若對所有 h2 換頁，
+   那些標題會各自擠出一頁，導致大量半空白頁 —— 所以規則綁在 .section 上。 */
+h2.section {
     font-size: 13.5pt; color: #166534; border-left: 5px solid #166534;
     padding-left: 9px; margin: 22px 0 10px 0; page-break-after: avoid;
-    page-break-before: always;      /* 每個大標另起一頁 */
+    page-break-before: always;
 }
-/* 第一個大標接在報表抬頭後面，不需要換頁 */
-h2.first { page-break-before: avoid; margin-top: 6px; }
-h3 {
+h2.section.first { page-break-before: avoid; margin-top: 6px; }
+
+/* AI markdown 自帶的標題：降級成內文小標，不換頁、不搶版面 */
+h1, h2, h3, h4 { page-break-after: avoid; }
+h1:not(.section), h2:not(.section) {
+    font-size: 11pt; color: #166534; margin: 12px 0 5px 0;
+    border: none; padding: 0;
+}
+h3.stock-head {
     font-size: 11.5pt; color: #111827; margin: 16px 0 6px 0;
     padding: 5px 8px; background: #f0fdf4; border-radius: 4px;
     page-break-after: avoid;
 }
+h3:not(.stock-head), h4 { font-size: 10.5pt; color: #374151; margin: 10px 0 4px 0; }
 table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 8px 0 14px 0; }
 th { background: #166534; color: #fff; padding: 5px 7px; text-align: left; font-weight: 600; }
 td { border-bottom: 1px solid #e5e7eb; padding: 4px 7px; }
@@ -499,7 +528,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
     for r, analysis, news_items in stock_sections:
         stocks_html += (
             f"<div class='stock-block'>"
-            f"<h3>{r['ticker']}　{r['name']}　{pct_html(r['change_pct'])}"
+            f"<h3 class='stock-head'>{r['ticker']}　{r['name']}　{pct_html(r['change_pct'])}"
             f"（收盤 {r['close']:,.2f}）</h3>"
             f"{md_to_html(analysis)}"
             f"{news_html(news_items)}</div>"
@@ -514,21 +543,21 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
   <div class="subtitle">{TODAY}（洛杉磯時間）｜產生時間 {generated} PT｜資料來源：Yahoo Finance、Google News、Claude AI（未經網路查證）</div>
 </div>
 
-<h2 class="first">一、大盤與總經</h2>
+<h2 class="section first">一、大盤與總經</h2>
 {md_to_html(market_overview)}
 <table><tr><th>指數</th><th>收盤</th><th>漲跌幅</th></tr>{idx_rows}</table>
 <table><tr><th>ETF</th><th>類股</th><th>漲跌幅</th></tr>{sec_rows}</table>
 
-<h2>二、觀察標的總覽</h2>
+<h2 class="section">二、觀察標的總覽</h2>
 <table>
 <tr><th>代號</th><th>名稱</th><th>資料日期</th><th>收盤</th><th>漲跌幅</th><th>量能</th></tr>
 {pf_rows}
 </table>
 
-<h2>三、個股漲跌原因分析</h2>
+<h2 class="section">三、個股漲跌原因分析</h2>
 {stocks_html}
 
-<h2>四、綜合觀察與後續關注</h2>
+<h2 class="section">四、綜合觀察與後續關注</h2>
 {md_to_html(synthesis)}
 
 <div class="disclaimer">本報告由自動化系統產生（AI 僅依據新聞標題與價量數據推論，未經網路查證），為一般性資訊與教育目的，非個人化投資建議。價格與新聞資料可能有延遲或錯誤，重大決策請以官方來源為準。</div>

@@ -352,14 +352,28 @@ def google_news(query, lang="en", limit=12, days=3):
     return items
 
 
-def is_relevant(title, ticker):
-    """標題是否真的在講這檔股票。
+# 這份報告只涵蓋美股與台股。代號在各國交易所會重複（NEM 在美國是金礦商
+# Newmont，在德國 XETRA 是軟體商 Nemetschek），標題若把代號標成外國交易所，
+# 就一定不是我們要的那家公司。
+FOREIGN_EXCHANGES = (
+    "XTRA|ETR|FRA|BER|MUN|STU|HAM|SWX|VTX|EPA|AMS|BIT|BME|LIS|"
+    "STO|CPH|HEL|OSL|WSE|PRA|IST|LON|LSE|TSE|TYO|HKG|SHA|SHE|"
+    "KRX|KOSDAQ|NSE|BSE|JSE|BVMF|TSX|TSXV|CVE|ASX|NZE|SGX|IDX|BKK|KLSE"
+)
 
-    只用子字串比對會誤判：'NEM' in 'NEMETSCHEK' 是 True，
-    於是德國軟體商 Nemetschek 的新聞會被當成金礦商 Newmont 的佐證。
-    改用字界比對，代號前後不能接英數字。
+
+def is_relevant(title, ticker):
+    """標題是否真的在講這檔美股／台股。
+
+    1. 代號被標成外國交易所（如 'Nemetschek (XTRA:NEM)'）→ 排除。
+    2. 代號用字界比對，避免 'NEM' 命中 'NEMETSCHEK'。
+
+    訂閱者只提供代號、沒有公司名，所以這裡只能靠代號判斷；
+    個人版有 portfolio.yaml 的 name 與 aliases，判斷會更準。
     """
     code = ticker.split(".")[0]
+    if re.search(rf"(?:{FOREIGN_EXCHANGES})\s*:\s*{re.escape(code)}\b", title, re.I):
+        return False
     return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])",
                           title, re.I))
 
