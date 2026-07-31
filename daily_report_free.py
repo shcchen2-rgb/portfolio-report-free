@@ -100,6 +100,9 @@ def snapshot(ticker):
     hist = fetch_history(ticker)
     if hist is None:
         return None
+    hist = hist.dropna(subset=["Close"])   # ← 新增：剔除「只有量、沒有收盤價」的列
+    if len(hist) < 2:                       # ← 新增：剔除後若不足兩列就跳過
+        return None                         # ← 新增
     last, prev = hist.iloc[-1], hist.iloc[-2]
     if not prev["Close"]:
         return None
