@@ -1,51 +1,52 @@
 # ============================================================
 # 投資組合設定檔
-# 買賣後記得更新 shares；notes 是餵給 AI 的產業背景，越詳細分析越準
+# notes 是餵給 AI 的產業背景，越詳細分析越準
+# 註：報告已改為中立格式，不再顯示部位與損益，shares 目前不被程式讀取
 #
 #   ticker : Yahoo Finance 代號（美股直接打代號；台股上市 .TW、上櫃 .TWO）
-#   name   : 顯示名稱
-#   shares : 持有股數（支援小數，零股／碎股直接填）
+#   name   : 顯示名稱（用公司英文原名，報告不做中文翻譯）
+#   shares : 持有股數（保留紀錄用，報告已不使用）
 #   notes  : 產業定位、上下游供應鏈、日常股價驅動因素、與其他持股的連動
 # ============================================================
 
 holdings:
   - ticker: NEM
-    name: Newmont 紐蒙特
+    name: Newmont
     shares: 2
     notes: "全球最大黃金礦商（2023 年併購 Newcrest 後），礦區橫跨美洲、澳洲、非洲、巴布亞紐幾內亞。股價核心驅動＝金價：實質利率（與美債殖利率反向）、美元指數（反向）、地緣政治避險需求、各國央行購金。個股面看季度產量與成本指引（AISC）、非核心資產出售進度、單一礦場營運事件（罷工、事故）。與 FCX 同屬礦業板塊但邏輯不同：金＝避險／利率資產，銅＝景氣循環資產，兩者同漲通常是弱美元行情。"
 
   - ticker: NVDA
-    name: NVIDIA 輝達
+    name: NVIDIA
     shares: 0.028
     notes: "AI GPU 絕對龍頭（fabless IC 設計）。上游：台積電先進製程代工（CoWoS 先進封裝為產能瓶頸）、HBM 記憶體來自 SK 海力士／美光／三星。下游客戶：微軟、Meta、Google、Amazon 四大 CSP 與主權 AI 專案。日常驅動：資料中心營收與財測、Blackwell／Rubin 世代出貨進度、對中出口管制政策、大客戶 capex 表態、雲端大廠自研 ASIC 消息（此類消息常利 AVGO、壓 NVDA，兩者是商用 GPU vs 客製晶片的競合關係）。"
 
   - ticker: NOC
-    name: Northrop Grumman 諾斯洛普格魯曼
+    name: Northrop Grumman
     shares: 0.25
     notes: "美國國防主承包商（prime contractor）：B-21 匿蹤轟炸機、Sentinel 洲際彈道飛彈、太空與衛星系統、飛彈防禦為核心計畫，收入絕大多數來自美國國防部長期合約。驅動：美國國防預算與國會撥款進度、地緣政治緊張（俄烏、中東、台海升溫通常利多國防股）、大型合約得失標、固定價格合約成本超支風險（B-21 曾為此認列鉅額虧損）。低 beta 防禦型持股，常與大盤脫鉤；與 SPCX 同屬太空題材但一傳統一新創，政府太空／飛彈防禦預算消息會同時影響兩者。"
 
   - ticker: NKE
-    name: Nike 耐吉
+    name: Nike
     shares: 5
     notes: "全球運動鞋服品牌龍頭（非必需消費），輕資產品牌商、製造外包越南／印尼／中國代工廠。驅動：季度財報與庫存去化進度、北美與大中華區消費數據（中國市場是情緒指標）、美國對東南亞關稅政策（產地曝險大）、On／Hoka／lululemon 等競品市占消息、DTC 直營與批發通路策略。對消費者信心、就業數據、中國宏觀數據的 beta 高，是組合中最純的消費景氣曝險。"
 
   - ticker: COST
-    name: Costco 好市多
+    name: Costco
     shares: 0.2
     notes: "會員制倉儲零售龍頭，防禦型消費（偏必需屬性）。驅動：同店銷售數據、會員費調整與續約率（獲利核心是會員費而非商品毛利）、Kirkland 自有品牌滲透率。長期估值偏高，因此對利率上行與「估值修正」型賣壓敏感；市場避險時常被當資金避風港。與 NKE 形成消費板塊內的對照組：NKE＝非必需景氣曝險、COST＝防禦，兩者走勢分歧時反映消費結構的強弱。"
 
   - ticker: FCX
-    name: Freeport-McMoRan 自由港
+    name: Freeport-McMoRan
     shares: 1
     notes: "全球最大上市銅礦商之一（副產黃金、鉬），核心資產：美國亞利桑那礦區、秘魯 Cerro Verde、印尼 Grasberg 世界級銅金礦。股價高度連動銅價：中國製造業景氣（PMI）、電網／電動車／AI 資料中心用銅需求、美元走勢（反向）。個股面：Grasberg 2025 年泥流事故後的復產進度與產量指引、印尼出口許可與冶煉政策。與 NEM 同板塊不同邏輯（銅＝景氣、金＝避險）；銅價因 AI 資料中心題材上漲時，會與 NVDA 等 AI 持股出現同向連動。"
 
   - ticker: GOOG
-    name: Alphabet 谷歌
+    name: Alphabet
     shares: 1
     notes: "Alphabet：搜尋＋YouTube 廣告為獲利主體，Google Cloud 為成長引擎，加上 Gemini AI、Waymo 自駕、自研 TPU 晶片（與 AVGO 共同設計——直接的持股連動點）。驅動：數位廣告景氣、雲端成長與 AI 商業化進展、「AI 顛覆搜尋」敘事的多空拉鋸、反壟斷訴訟進展（搜尋案救濟措施、廣告技術案）、AI capex 規模（Google 上調 capex 時同時利多 NVDA／AVGO／CIEN 等供應鏈持股，對 GOOG 本身則有獲利率壓力的兩面解讀）。"
 
   - ticker: AVGO
-    name: Broadcom 博通
+    name: Broadcom
     shares: 1
     notes: "半導體＋軟體雙引擎。半導體：客製 AI ASIC（XPU）設計龍頭——Google TPU 的共同設計者，客戶含 Meta、OpenAI（2025 年宣布大型合作）；AI 資料中心乙太網路交換晶片（Tomahawk／Jericho）；Apple 射頻元件。軟體：VMware 企業虛擬化（訂閱制轉型）。與 NVDA 為「商用 GPU vs 客製 ASIC」競合：雲端大廠自研晶片或降低對 NVDA 依賴的消息通常利 AVGO。驅動：AI 營收指引、新 XPU 客戶傳聞、網通晶片需求、財報中 AI 與非 AI 半導體的分化。"
 
@@ -55,11 +56,11 @@ holdings:
     notes: "光通訊網路設備商，相干光學（coherent optics）技術龍頭（WaveLogic 系列），產品用於長途光傳輸與資料中心互連（DCI）。客戶：雲端巨頭（含 Google 等——與 GOOG capex 連動）與電信商。位於 AI 供應鏈的「網路層」：AI 資料中心擴建帶動 800G／1.6T 光傳輸需求，與 NVDA（運算層）、AVGO（交換晶片層）同鏈不同層，AI capex 消息常帶動連動。關注：訂單能見度與財報、雲端客戶營收占比、Coherent／Lumentum／Marvell 等光通訊同業財報的外溢效應、電信 capex 循環。"
 
   - ticker: SPCX
-    name: SpaceX 太空探索
+    name: SpaceX
     shares: 10
     notes: "SpaceX（Space Exploration Technologies），2026 年 6 月 IPO 的新上市股。業務三支柱：火箭發射服務（Falcon 9／Heavy 近乎壟斷商業發射市場、Starship 開發中）、Starlink 衛星網路（營收成長主引擎，訂閱數是關鍵指標）、Starshield 政府／國防版服務。驅動：Starship 試飛成敗、Starlink 用戶與資費消息、NASA 與國防合約（Artemis 登月、飛彈防禦）、競品進度（Blue Origin、Amazon Kuiper）、Elon Musk 個人相關頭條（政治動向、其他事業外溢效應）。新股特性：波動大、公開財務資訊有限、留意 IPO 限售期（lockup）解禁時點。與 NOC 同屬太空／國防題材。"
 
   - ticker: XOM
-    name: ExxonMobil 埃克森美孚
+    name: ExxonMobil
     shares: 1
     notes: "全球最大民營整合石油公司（super-major）：上游成長雙引擎＝二疊紀盆地（併購 Pioneer 後為 Permian 頁岩龍頭）與圭亞那深水油田，加上煉油、化工一條龍。驅動：油價（OPEC+ 供給決策、地緣政治、EIA 每週庫存）、天然氣價、煉油利差（crack spread）、產量與資本紀律、庫藏股與股利政策。防禦＋通膨對沖屬性；能源與科技常呈類股輪動（能源強的日子科技常弱），XOM 異動時先看油價與資金輪動、再看個股消息。"
