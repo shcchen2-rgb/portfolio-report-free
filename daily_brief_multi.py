@@ -352,23 +352,42 @@ def google_news(query, lang="en", limit=12, days=3):
     return items
 
 
+def is_relevant(title, ticker):
+    """標題是否真的在講這檔股票。
+
+    只用子字串比對會誤判：'NEM' in 'NEMETSCHEK' 是 True，
+    於是德國軟體商 Nemetschek 的新聞會被當成金礦商 Newmont 的佐證。
+    改用字界比對，代號前後不能接英數字。
+    """
+    code = ticker.split(".")[0]
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])",
+                          title, re.I))
+
+
 def rank_news(items, ticker, top_n):
-    """標題有提到代號的排前面，其次依日期新到舊"""
-    base = ticker.split(".")[0].upper()
+    """先濾掉不是在講這檔股票的標題，再依日期新到舊排序。
 
-    def score(it):
-        return (1 if base in it["title"].upper() else 0, it.get("date", ""))
-
-    return sorted(items, key=score, reverse=True)[:top_n]
+    寧可佐證則數不足，也不要塞進錯誤的新聞——錯的佐證比沒有佐證更糟。
+    """
+    relevant = [it for it in items if is_relevant(it["title"], ticker)]
+    return sorted(relevant, key=lambda it: it.get("date", ""), reverse=True)[:top_n]
 
 
 def news_for_ticker(t, days=3, top_n=5):
-    if is_tw(t):
-        code = t.split(".")[0]
-        items = google_news(f"{code} 股價", lang="zh", days=days)
-    else:
-        items = google_news(f"{t} stock", lang="en", days=days)
-    return rank_news(items, t, top_n)
+    """先抓近 N 日；若相關的則數不足，再放寬到近七日補足（寧可舊，不可錯）"""
+    code = t.split(".")[0]
+
+    def fetch(d):
+        if is_tw(t):
+            return google_news(f"{code} 股價", lang="zh", days=d)
+        return google_news(f"{t} stock", lang="en", days=d)
+
+    picked = rank_news(fetch(days), t, top_n)
+    if len(picked) < top_n and days < 7:
+        wider = rank_news(fetch(7), t, top_n)
+        if len(wider) > len(picked):
+            picked = wider
+    return picked
 
 
 def news_for_prompt(items, lang):
@@ -484,7 +503,9 @@ STOCK_SYSTEM = {
            "礦業要區分貴金屬（避險/利率邏輯）與工業金屬（景氣循環邏輯）。\n"
            "5. 誠實條款（最重要）：新聞中若找不到個股層級的催化劑，就直接寫「今日走勢主要由類股／"
            "大盤驅動，近三日新聞中無重大個股消息」。無法從提供資料推導的因果關係一律不要寫，"
-           "絕不編造財報數字、法說內容或分析師動作。\n\n"
+           "絕不編造財報數字、法說內容或分析師動作。\n"
+           "6. 用字規範：這是觀察報告不是操作指示。不要使用「建議」二字，要表達後續方向時"
+           "請用「可待關注」「值得留意」；也不要出現目標價、進出場時機或買賣指示。\n\n"
            "輸出：繁體中文 markdown，250–400 字，用下列四個粗體小標分段。"),
     "en": ("You are a senior buy-side industry analyst. Your readers are retail investors with basic "
            "financial literacy — they understand guidance, multiples, beta and sector rotation, so don't "
