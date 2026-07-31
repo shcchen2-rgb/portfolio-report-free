@@ -19,6 +19,7 @@ AI 引擎：Anthropic API（Claude）
 """
 
 import os
+import re
 import sys
 import time
 import smtplib
@@ -168,30 +169,55 @@ def google_news(query, lang="en", limit=12, days=3):
     return items
 
 
-def rank_news(items, ticker, top_n):
-    """標題有提到代號的排前面，其次依日期新到舊"""
-    base = ticker.split(".")[0].upper()
+def is_relevant(title, ticker, name):
+    """標題是否真的在講這家公司。
 
-    def score(it):
-        return (1 if base in it["title"].upper() else 0, it.get("date", ""))
+    只用子字串比對會誤判：'NEM' in 'NEMETSCHEK' 是 True，
+    於是德國軟體商 Nemetschek 的新聞被當成金礦商 Newmont 的佐證。
+    代號改用字界比對，公司名另外用具辨識度的詞彙比對。
+    """
+    code = ticker.split(".")[0]
+    if re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", title, re.I):
+        return True
+    # 公司名取長度 >= 4 的詞（避免 'Inc'、'Co' 這種通用字誤中）
+    for token in re.split(r"[^A-Za-z0-9一-鿿]+", name or ""):
+        if len(token) >= 4 and re.search(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])",
+                                         title, re.I):
+            return True
+    return False
 
-    return sorted(items, key=score, reverse=True)[:top_n]
+
+def rank_news(items, ticker, name, top_n):
+    """先濾掉不是在講這家公司的標題，再依日期新到舊排序。
+
+    寧可佐證則數不足，也不要塞進錯誤的新聞——錯的佐證比沒有佐證更糟。
+    """
+    relevant = [it for it in items if is_relevant(it["title"], ticker, name)]
+    return sorted(relevant, key=lambda it: it.get("date", ""), reverse=True)[:top_n]
 
 
 def news_for_holding(h, days=3, top_n=5):
-    t = h["ticker"]
-    if is_tw(t):
-        code = t.split(".")[0]
-        items = google_news(f"{code} 股價", lang="zh", days=days)
-    else:
-        items = google_news(f"{t} stock", lang="en", days=days)
-    return rank_news(items, t, top_n)
+    """先抓近三日；若相關的則數不足，再放寬到近七日補足（寧可舊，不可錯）"""
+    t, name = h["ticker"], h.get("name", "")
+    code = t.split(".")[0]
+
+    def fetch(d):
+        if is_tw(t):
+            return google_news(f"{code} 股價", lang="zh", days=d)
+        return google_news(f"{t} stock", lang="en", days=d)
+
+    picked = rank_news(fetch(days), t, name, top_n)
+    if len(picked) < top_n:
+        wider = rank_news(fetch(7), t, name, top_n)
+        if len(wider) > len(picked):
+            picked = wider
+    return picked
 
 
 def news_for_prompt(items):
     """給 AI 看的編號清單，編號與報告中的佐證清單一致"""
     if not items:
-        return "（近三日未取得相關新聞）"
+        return "（未取得相關新聞）"
     return "\n".join(f"[{i}] {it['title']}（{it['source']}, {it['date']}）"
                      for i, it in enumerate(items, 1))
 
@@ -200,14 +226,14 @@ def news_html(items):
     """報告中呈現的佐證清單（標題＋來源＋日期＋原文連結），編號對應 AI 的 [n]"""
     if not items:
         return ("<div class='evidence'><div class='ev-title'>"
-                "近三日未取得可佐證的新聞來源。</div></div>")
+                "未取得可佐證的相關新聞（已濾除非本公司的標題）。</div></div>")
     rows = "".join(
         f"<li>{it['title']}　<span class='ev-meta'>— {it['source']}, {it['date']}</span>"
         + (f" <a href='{it['link']}'>原文</a>" if it["link"] else "")
         + "</li>"
         for it in items
     )
-    return ("<div class='evidence'><div class='ev-title'>新聞佐證（近三日）</div>"
+    return ("<div class='evidence'><div class='ev-title'>新聞佐證</div>"
             f"<ol class='ev-list'>{rows}</ol></div>")
 
 
@@ -279,12 +305,13 @@ STOCK_SYSTEM = (
     "軟體股看訂閱/雲端與 AI 商業化；金融股看利率環境；以此類推。\n"
     "3. 區分 alpha 與 beta：比較個股漲跌幅與大盤及所屬類股 ETF 的表現，"
     "判斷今天的波動是「自身消息驅動」還是「跟著類股/大盤走」，或被其他權值股帶動。\n"
-    "4. 誠實原則（最重要）：如果提供的標題中沒有明確的個股催化劑，"
+    "4. 用字規範：不要使用「建議」二字。要表達後續觀察方向時，請用「可待關注」「值得留意」「後續觀察」。\n"
+    "5. 誠實原則（最重要）：如果提供的標題中沒有明確的個股催化劑，"
     "就直接說「今日波動主要反映大盤/類股走勢，提供的新聞中無重大個股消息」，"
     "絕對不要編造、猜測或過度解讀理由。\n"
-    "5. 中立性：這是一份觀察報告，不是操作建議。不要出現買賣建議、目標價、"
-    "進出場時機，也不要假設讀者持有這檔股票。\n"
-    "6. 用繁體中文 markdown 輸出，長度控制在 200–400 字。"
+    "6. 中立性：這是一份觀察報告。不要出現買賣指示、目標價、進出場時機，"
+    "也不要假設讀者持有這檔股票。\n"
+    "7. 用繁體中文 markdown 輸出，長度控制在 200–400 字。"
 )
 
 SYNTH_SYSTEM = (
@@ -292,8 +319,9 @@ SYNTH_SYSTEM = (
     "只能依據提供的資料歸納。重點是找出「跨個股的共同主題」"
     "（例如同一條供應鏈的連動、同一總經因素影響多檔標的）。"
     "提到後續關注事項時，只能基於提供的新聞中出現的資訊或一般性的週期"
-    "（如財報季、FOMC 例會），不要虛構具體日期。這是觀察報告不是操作建議，"
-    "不要出現買賣建議或目標價。用繁體中文 markdown 輸出。"
+    "（如財報季、FOMC 例會），不要虛構具體日期。這是觀察報告，不要出現買賣指示"
+    "或目標價，也不要使用「建議」二字（改用「可待關注」「值得留意」）。"
+    "用繁體中文 markdown 輸出。"
 )
 
 
