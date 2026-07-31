@@ -667,18 +667,28 @@ body { font-family: 'Noto Sans CJK TC', 'Noto Sans TC', 'PingFang TC', sans-seri
 .header { border-bottom: 3px solid #166534; padding-bottom: 10px; margin-bottom: 18px; }
 h1 { font-size: 19pt; color: #166534; margin: 0 0 4px 0; }
 .subtitle { color: #6b7280; font-size: 9.5pt; }
-h2 { font-size: 13.5pt; color: #166534; border-left: 5px solid #166534;
-  padding-left: 9px; margin: 22px 0 10px 0; page-break-after: avoid; }
-h3 { font-size: 11.5pt; color: #111827; margin: 16px 0 6px 0;
+/* 換頁規則只綁 .section。AI 產出的 markdown 常自帶標題（會轉成 h2/h3），
+   若對所有 h2 換頁，那些標題會各自擠出一頁，造成大量半空白頁。 */
+h2.section { font-size: 13.5pt; color: #166534; border-left: 5px solid #166534;
+  padding-left: 9px; margin: 22px 0 10px 0; page-break-after: avoid;
+  page-break-before: always; }
+h2.section.first { page-break-before: avoid; margin-top: 6px; }
+h1, h2, h3, h4 { page-break-after: avoid; }
+h1:not(.section), h2:not(.section) { font-size: 11pt; color: #166534;
+  margin: 12px 0 5px 0; border: none; padding: 0; }
+h3.stock-head { font-size: 11.5pt; color: #111827; margin: 16px 0 6px 0;
   padding: 5px 8px; background: #f0fdf4; border-radius: 4px; page-break-after: avoid; }
-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 8px 0 14px 0; }
+h3:not(.stock-head), h4 { font-size: 10.5pt; color: #374151; margin: 10px 0 4px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 8px 0 14px 0;
+  page-break-inside: avoid; }
 th { background: #166534; color: #fff; padding: 5px 7px; text-align: left; font-weight: 600; }
 td { border-bottom: 1px solid #e5e7eb; padding: 4px 7px; }
 tr:nth-child(even) td { background: #f9fafb; }
 .up { color: __UP_COLOR__; font-weight: 700; }
 .down { color: __DOWN_COLOR__; font-weight: 700; }
 .flat { color: #6b7280; }
-.stock-block { page-break-inside: avoid; margin-bottom: 14px; }
+.stock-block { margin-bottom: 14px; }
+.stock-block + .stock-block { page-break-before: always; }
 .evidence { background: #f8fafc; border-left: 3px solid #94a3b8; border-radius: 3px;
   padding: 6px 10px 6px 4px; margin: 8px 0 0 0; }
 .ev-title { font-size: 8.5pt; font-weight: 700; color: #475569; margin-left: 6px; }
@@ -689,7 +699,7 @@ tr:nth-child(even) td { background: #f9fafb; }
 .stock-block p { margin: 5px 0; }
 .disclaimer { margin-top: 24px; padding: 9px 11px; border-top: 2px solid #cbd5e1;
   background: #f8fafc; font-size: 7.8pt; color: #64748b; line-height: 1.5;
-  text-align: justify; }
+  text-align: justify; page-break-before: avoid; }
 .disc-title { font-weight: 700; color: #475569; font-size: 8.2pt;
   letter-spacing: 0.4px; margin-bottom: 3px; }
 strong { color: #111827; }
@@ -712,8 +722,27 @@ def pct_html(p):
     return f'<span class="{cls}">{p:+.2f}%</span>'
 
 
+def strip_ai_headings(text):
+    """移除 AI 自行加上的 markdown 標題。
+
+    報表已有自己的大標與個股小標，AI 再寫一次就是重複佔版面。
+    prompt 已要求不要加，但模型不一定遵守，所以程式端也拆一層：
+    ATX 標題降級成粗體，開頭的直接丟掉。
+    """
+    out = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if not m:
+            out.append(line)
+            continue
+        if not any(x.strip() for x in out):   # 開頭的標題直接省略
+            continue
+        out.append(f"**{m.group(1).strip()}**")
+    return "\n".join(out).strip()
+
+
 def md_to_html(text):
-    return md_lib.markdown(text or "", extensions=["extra"])
+    return md_lib.markdown(strip_ai_headings(text), extensions=["extra"])
 
 
 def build_report_html(lang, sub, rows, failed, market_overview,
@@ -748,7 +777,7 @@ def build_report_html(lang, sub, rows, failed, market_overview,
         ev = news_html(news_cache.get(r["ticker"], []), lang)
         stocks_html += (
             f"<div class='stock-block'>"
-            f"<h3>{r['ticker']}　{pct_html(r['change_pct'])}"
+            f"<h3 class='stock-head'>{r['ticker']}　{pct_html(r['change_pct'])}"
             f"（{t['close_label']} {r['close']:,.2f}）</h3>"
             f"{md_to_html(a)}{ev}</div>"
         )
@@ -762,21 +791,21 @@ def build_report_html(lang, sub, rows, failed, market_overview,
   <div class="subtitle">{t['prepared_for']}{sub['name']}｜{TODAY}{t['tz_note']}｜{generated} PT｜{t['subtitle']}</div>
 </div>
 
-<h2>{t['sec_market']}</h2>
+<h2 class="section first">{t['sec_market']}</h2>
 {md_to_html(market_overview)}
 <table><tr><th>{t['th_index']}</th><th>{t['th_close']}</th><th>{t['th_chg']}</th></tr>{idx_rows}</table>
 <table><tr><th>{t['th_etf']}</th><th>{t['th_sector']}</th><th>{t['th_chg']}</th></tr>{sec_rows}</table>
 
-<h2>{t['sec_watchlist']}</h2>
+<h2 class="section">{t['sec_watchlist']}</h2>
 <table>
 <tr><th>{t['th_ticker']}</th><th>{t['th_date']}</th><th>{t['th_close']}</th><th>{t['th_chg']}</th><th>{t['th_vol']}</th></tr>
 {wl_rows}
 </table>
 
-<h2>{t['sec_stocks']}</h2>
+<h2 class="section">{t['sec_stocks']}</h2>
 {stocks_html}
 
-<h2>{t['sec_synth']}</h2>
+<h2 class="section">{t['sec_synth']}</h2>
 {md_to_html(synthesis)}
 
 <div class="disclaimer"><div class="disc-title">{t['disclosure_title']}</div>{t['disclaimer']}</div>
