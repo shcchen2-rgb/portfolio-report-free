@@ -58,15 +58,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python daily_brief_multi.py
 
-      - name: 備份 PDF（dry_run 時用來檢查版面）
-        uses: actions/upload-artifact@v4
-        with:
-          name: briefs-${{ github.run_id }}
-          path: output/*.pdf
-          retention-days: 30
-          if-no-files-found: ignore
-
-      - name: 備份全部 PDF（保留 30 天）
+      - name: 備份全部 PDF（保留 30 天；dry_run 時也用來檢查版面）
         if: always()
         uses: actions/upload-artifact@v4
         with:
