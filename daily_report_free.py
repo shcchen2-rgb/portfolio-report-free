@@ -346,7 +346,7 @@ def analyze_stock(cfg, h, snap, market_overview, peer_line, news_items):
 def synthesize(cfg, market_overview, stock_sections):
     # 控制輸入長度以節省 token 成本，逐檔分析先裁切再彙整
     parts = []
-    for r, a in stock_sections:
+    for r, a, _news in stock_sections:
         parts.append(f"### {r['ticker']} {r['name']}（{r['change_pct']:+.2f}%）\n{a[:500]}")
     analyses_text = "\n\n".join(parts)
     user = f"""以下是今天（{TODAY}）這份報告涵蓋的資料。
