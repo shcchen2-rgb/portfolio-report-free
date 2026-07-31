@@ -454,7 +454,8 @@ h3.stock-head {
     page-break-after: avoid;
 }
 h3:not(.stock-head), h4 { font-size: 10.5pt; color: #374151; margin: 10px 0 4px 0; }
-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 8px 0 14px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 8px 0 14px 0;
+  page-break-inside: avoid; }
 th { background: #166534; color: #fff; padding: 5px 7px; text-align: left; font-weight: 600; }
 td { border-bottom: 1px solid #e5e7eb; padding: 4px 7px; }
 tr:nth-child(even) td { background: #f9fafb; }
@@ -475,6 +476,7 @@ tr:nth-child(even) td { background: #f9fafb; }
 .disclaimer {
     margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb;
     font-size: 8pt; color: #9ca3af;
+    page-break-before: avoid;   /* 跟著綜合觀察，不要自己佔一頁 */
 }
 strong { color: #111827; }
 """
@@ -496,8 +498,29 @@ def pct_html(p):
     return f'<span class="{cls}">{p:+.2f}%</span>'
 
 
+def strip_ai_headings(text):
+    """移除 AI 自行加上的 markdown 標題。
+
+    報表已經有自己的大標與個股小標，AI 再寫一次「綜合觀察與後續關注」
+    就是重複佔版面。prompt 已要求不要加，但模型不一定遵守，
+    所以在程式端也拆一層：ATX 標題一律降級成粗體，開頭的直接丟掉。
+    """
+    lines, out = (text or "").splitlines(), []
+    for line in lines:
+        m = re.match(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if not m:
+            out.append(line)
+            continue
+        title = m.group(1).strip()
+        # 開頭的標題（前面還沒有實質內容）直接省略，其餘保留為粗體小標
+        if not any(x.strip() for x in out):
+            continue
+        out.append(f"**{title}**")
+    return "\n".join(out).strip()
+
+
 def md_to_html(text):
-    return md_lib.markdown(text or "", extensions=["extra"])
+    return md_lib.markdown(strip_ai_headings(text), extensions=["extra"])
 
 
 def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
