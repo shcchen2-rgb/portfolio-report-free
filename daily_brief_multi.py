@@ -306,16 +306,23 @@ def fetch_history(ticker, period="1mo", retries=6, soft_retries=2):
             hist = yf.Ticker(ticker).history(period=period)
             valid = _valid_close_rows(hist)
             if valid >= 2:
-                fresh = _finite(hist.iloc[-1]["Close"]) is not None
-                if fresh:
+                if _finite(hist.iloc[-1]["Close"]) is not None:
                     if i:
                         print(f"  [恢復] {ticker} 第 {i + 1} 次嘗試成功（{valid} 筆有效收盤價）")
                     return hist
-                if i >= soft_retries:
-                    print(f"  [接受] {ticker} 最新一列尚無收盤價，"
-                          f"改用最近一個完整交易日（有效資料 {valid} 筆）")
+                # 最新一列沒有收盤價。先看那是哪一天：
+                # 若日期就是該市場的「今天」（或更晚），代表這場交易還沒結束，
+                # 那一列本來就不會補上，重試毫無意義 —— 直接接受，
+                # snapshot() 會退回前一個完整交易日。
+                # 只有日期已經是過去式，才代表資料遲到，值得再試。
+                tail = hist.index[-1]
+                if tail.date() >= dt.datetime.now(tail.tzinfo).date():
                     return hist
-                last_err = "最新一列的收盤價尚未補上"
+                if i >= soft_retries:
+                    print(f"  [接受] {ticker} {tail.date()} 的收盤價遲遲未補上，"
+                          f"改用前一個完整交易日（有效資料 {valid} 筆）")
+                    return hist
+                last_err = f"{tail.date()} 的收盤價尚未補上"
             else:
                 rows = 0 if hist is None else len(hist)
                 last_err = f"回傳 {rows} 列、其中僅 {valid} 筆有有效收盤價"
