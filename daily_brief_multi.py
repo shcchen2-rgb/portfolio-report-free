@@ -281,26 +281,53 @@ def fetch_history(ticker, period="1mo", retries=4):
     return None
 
 
+def _finite(v):
+    """NaN 與 None 都算沒有資料。
+
+    不能用 `if not v` 判斷 —— NaN 在 Python 是 truthy，`not NaN` 會得到
+    False，這正是舊版讓 nan 溜進報告的原因。
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None      # f != f 只有 NaN 成立
+
+
 def snapshot(ticker):
     hist = fetch_history(ticker)
     if hist is None:
         return None
-    last, prev = hist.iloc[-1], hist.iloc[-2]
-    if not prev["Close"]:
+
+    # Yahoo 有時會先把當日那一列建出來（Volume 已有值）但 Close 還沒補上。
+    # 直接取 iloc[-1] 就會拿到 NaN，一路算成 nan% 印進報告，
+    # AI 還會為了一檔沒有價格的股票白花一次呼叫。
+    # 只保留 Close 有效的列，等於自動退回最近一個「資料完整」的交易日，
+    # 而 date 欄會誠實反映那一天是哪天。
+    hist = hist.dropna(subset=["Close"])
+    if len(hist) < 2:
         return None
-    change_pct = (last["Close"] - prev["Close"]) / prev["Close"] * 100
-    vol = float(last.get("Volume", 0) or 0)
+
+    last, prev = hist.iloc[-1], hist.iloc[-2]
+    close, prev_close = _finite(last["Close"]), _finite(prev["Close"])
+    if close is None or not prev_close:
+        return None
+
+    change_pct = (close - prev_close) / prev_close * 100
+
     vol_ratio = None
-    if len(hist) > 6:
-        avg_vol = float(hist["Volume"].iloc[-21:-1].mean())
-        if avg_vol > 0:
+    vol = _finite(last.get("Volume"))
+    if vol is not None and len(hist) > 6:
+        avg_vol = _finite(hist["Volume"].iloc[-21:-1].mean())
+        if avg_vol:
             vol_ratio = vol / avg_vol
+
     return {
         "ticker": ticker,
         "date": hist.index[-1].date().isoformat(),
-        "close": float(last["Close"]),
-        "prev_close": float(prev["Close"]),
-        "change_pct": float(change_pct),
+        "close": close,
+        "prev_close": prev_close,
+        "change_pct": change_pct,
         "vol_ratio": vol_ratio,
     }
 
