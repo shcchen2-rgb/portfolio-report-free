@@ -269,6 +269,13 @@ def load_subscribers():
 # ------------------------------------------------------------
 # 市場資料（yfinance，含重試）
 # ------------------------------------------------------------
+# 「最新交易日的收盤價遲遲未補上」的標的數。累積到門檻就判定是資料源
+# 全站性的缺漏（而非個別標的的暫時失敗），後續標的直接接受舊資料，
+# 不再逐檔軟重試 —— 否則整批標的每檔白等十幾秒。
+_stale_tail_seen = 0
+_STALE_TAIL_GIVE_UP = 3
+
+
 def _valid_close_rows(hist):
     """有幾筆「收盤價真的存在」的日 K。
 
@@ -318,9 +325,20 @@ def fetch_history(ticker, period="1mo", retries=6, soft_retries=2):
                 tail = hist.index[-1]
                 if tail.date() >= dt.datetime.now(tail.tzinfo).date():
                     return hist
+                # 已經確認這是 Yahoo 全站性的資料缺漏，就別再逐檔重試。
+                # 實測：Yahoo 對 2026-08-03 的 ^GSPC 等標的收盤數小時後仍是
+                # Open/Close 皆 NaN、只有 Volume。這種缺漏不會因為多等幾秒而補上，
+                # 47 檔各軟重試兩次會讓整個 job 多花 8 分鐘。
+                global _stale_tail_seen
+                if _stale_tail_seen >= _STALE_TAIL_GIVE_UP:
+                    return hist
                 if i >= soft_retries:
+                    _stale_tail_seen += 1
+                    note = ("；已連續 {} 檔如此，判定為資料源全站性缺漏，"
+                            "後續標的不再重試".format(_stale_tail_seen)
+                            if _stale_tail_seen >= _STALE_TAIL_GIVE_UP else "")
                     print(f"  [接受] {ticker} {tail.date()} 的收盤價遲遲未補上，"
-                          f"改用前一個完整交易日（有效資料 {valid} 筆）")
+                          f"改用前一個完整交易日（有效資料 {valid} 筆）{note}")
                     return hist
                 last_err = f"{tail.date()} 的收盤價尚未補上"
             else:
