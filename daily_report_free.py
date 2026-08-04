@@ -19,6 +19,7 @@ AI 引擎：Anthropic API（Claude）
 """
 
 import os
+import random
 import re
 import sys
 import time
@@ -83,16 +84,67 @@ def currency_of(ticker):
 # ------------------------------------------------------------
 # 市場資料（yfinance，含重試以應付 Yahoo 偶發限流）
 # ------------------------------------------------------------
-def fetch_history(ticker, period="1mo", retries=4):
+def _valid_close_rows(hist):
+    """有幾筆「收盤價真的存在」的日 K。
+
+    不能用 len(hist) 判斷資料夠不夠：Yahoo 會先把當日那列建出來、
+    Volume 已有值但 Close 還是 NaN，列數看起來正常、內容卻是空的。
+    """
+    if hist is None or "Close" not in getattr(hist, "columns", []):
+        return 0
+    return len(hist.dropna(subset=["Close"]))
+
+
+def fetch_history(ticker, period="1mo", retries=6, soft_retries=2):
+    """抓日 K，重試到拿回可用資料為止。
+
+    Yahoo 的失敗有三種樣態，嚴重程度不同：
+      A. 連線錯誤或限流（429）→ 拋例外，完全沒資料
+      B. 回傳空的或有效收盤價不足兩筆 → 等於沒資料
+      C. 列數與歷史都正常，只有「最新那一列」的 Close 是 NaN
+         （當日日 K 尚未補完，Volume 已有值）
+
+    A 與 B 會用滿 retries 次。C 只重試 soft_retries 次就接受 ——
+    因為 C 已經有可用的歷史資料，snapshot() 會自動退回前一個完整交易日；
+    若在台股尚未收盤時執行，那一列本來就不會補上，無限重試只會讓
+    23 檔標的把 job 拖到逾時。
+
+    舊版只看 len(hist) >= 2，C 這種情況會直接接受且不重試，
+    於是 nan 一路印進報告（2026-08-03 台股四檔就是這樣）。
+
+    退避採指數 + 隨機抖動：整批標的常同時撞限流，固定間隔會讓下一輪
+    又在同一秒一起打過去，等於再撞一次。
+    """
+    last_err = ""
     for i in range(retries):
         try:
             hist = yf.Ticker(ticker).history(period=period)
-            if hist is not None and len(hist) >= 2:
-                return hist
-            print(f"  [警告] {ticker} 回傳資料不足（第 {i + 1} 次）")
+            valid = _valid_close_rows(hist)
+            if valid >= 2:
+                fresh = _finite(hist.iloc[-1]["Close"]) is not None
+                if fresh:
+                    if i:
+                        print(f"  [恢復] {ticker} 第 {i + 1} 次嘗試成功（{valid} 筆有效收盤價）")
+                    return hist
+                if i >= soft_retries:
+                    print(f"  [接受] {ticker} 最新一列尚無收盤價，"
+                          f"改用最近一個完整交易日（有效資料 {valid} 筆）")
+                    return hist
+                last_err = "最新一列的收盤價尚未補上"
+            else:
+                rows = 0 if hist is None else len(hist)
+                last_err = f"回傳 {rows} 列、其中僅 {valid} 筆有有效收盤價"
         except Exception as e:
-            print(f"  [警告] {ticker} 抓取失敗（第 {i + 1} 次）：{e}")
-        time.sleep(4 * (i + 1))
+            last_err = str(e).replace("\n", " ")[:120]
+
+        if i < retries - 1:
+            # 3, 6, 12, 24, 30…（上限 30）再加 0~2 秒抖動
+            wait = min(3 * (2 ** i), 30) + random.uniform(0, 2)
+            print(f"  [重試] {ticker} 第 {i + 1}/{retries} 次（{last_err}），"
+                  f"{wait:.1f} 秒後重試")
+            time.sleep(wait)
+
+    print(f"  [放棄] {ticker} 重試 {retries} 次仍無有效資料：{last_err}")
     return None
 
 
