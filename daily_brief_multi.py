@@ -45,6 +45,10 @@ FORCE = os.environ.get("FORCE") == "1"
 
 MAX_TICKERS_PER_SUB = 15
 
+# 盤後報價的擷取時刻（洛杉磯時間）。盤後時段報價一直在動，
+# 不標時間的話讀者無從判斷這個數字是幾點的快照。
+AH_CAPTURED_AT = None
+
 INDEXES = [
     ("^GSPC", "S&P 500", "S&P 500"),
     ("^IXIC", "那斯達克", "Nasdaq"),
@@ -77,7 +81,11 @@ L = {
         "th_index": "指數", "th_close": "收盤", "th_chg": "漲跌幅",
         "th_etf": "ETF", "th_sector": "類股",
         "th_ticker": "代號", "th_date": "資料日期", "th_vol": "量能",
+        "th_after": "盤後", "th_after_chg": "盤後漲跌",
         "close_label": "收盤",
+        "ah_note": ("盤後報價擷取時間：{at} PT。盤後為正常盤收盤後的延長交易時段，"
+                    "成交稀薄、買賣價差大，單筆委託即可牽動報價，且盤後漲跌不代表"
+                    "隔日開盤會延續。台股與指數無盤後交易，以「—」表示。"),
         "failed_ticker": "無法取得此代號的價格資料，請確認代號（美股直接打代號、台股加 .TW / 上櫃 .TWO）。",
         "subtitle": "資料來源：Yahoo Finance（市場數據）、Google News（新聞來源）",
         "disclosure_title": "方法論與重要聲明",
@@ -97,7 +105,12 @@ L = {
         "th_index": "Index", "th_close": "Close", "th_chg": "Change",
         "th_etf": "ETF", "th_sector": "Sector",
         "th_ticker": "Ticker", "th_date": "Data date", "th_vol": "Volume",
+        "th_after": "After-hrs", "th_after_chg": "After-hrs chg",
         "close_label": "Close",
+        "ah_note": ("After-hours quote captured at {at} PT. Extended-hours trading is "
+                    "thin, spreads are wide and a single order can move the print; an "
+                    "after-hours move does not imply the next open will follow. Taiwan "
+                    "listings and indices have no after-hours session, shown as \u201c—\u201d."),
         "failed_ticker": "Price data unavailable — please double-check the ticker (US tickers as-is; Taiwan listed = .TW, OTC = .TWO).",
         "subtitle": "Sources: Yahoo Finance (market data), Google News (headlines)",
         "disclosure_title": "Methodology & Disclosures",
@@ -409,6 +422,29 @@ def snapshot(ticker):
     }
 
 
+def after_hours(ticker):
+    """盤後報價。沒有盤後交易的標的（台股、指數）回 None。
+
+    走 Ticker.info —— fast_info 沒有 postMarketPrice 欄位。
+    每檔約 0.3 秒，29 檔約 10 秒，成本可接受。
+
+    postMarketChangePercent 的單位已經是百分點（實測 AAPL 312.4861 對
+    311.00 是 +0.4778%，欄位值就是 0.47785），不需要再乘 100。
+
+    ⚠️ 盤後成交稀薄、價差大，單筆大單就能拉動報價，且盤後漲跌不代表
+    隔日開盤會維持。報告上必須標示這點，不可與正常盤數字並列而不加註。
+    """
+    try:
+        info = yf.Ticker(ticker).info
+    except Exception as e:
+        print(f"  [警告] {ticker} 盤後報價抓取失敗：{str(e)[:80]}")
+        return None
+    price = _finite(info.get("postMarketPrice"))
+    if price is None:
+        return None
+    return {"price": price, "change_pct": _finite(info.get("postMarketChangePercent"))}
+
+
 def market_was_open_today():
     spy = fetch_history("SPY", period="5d")
     if spy is None:
@@ -699,11 +735,25 @@ def analyze_stock(cfg, lang, snap, market_ctx, news_items):
     news_text = news_for_prompt(news_items, lang)
     vol_txt = f"{snap['vol_ratio']:.2f}x" if snap.get("vol_ratio") else "n/a"
     n = len(news_items)
+    # 盤後那段要餵給 AI，否則它會讀到「財報後大漲」的新聞、卻只拿到沒反應的
+    # 正常盤收盤價，兩個訊號打架，只能硬湊或整段放棄。
+    ah = snap.get("after") or {}
+    at = AH_CAPTURED_AT.strftime("%H:%M") if AH_CAPTURED_AT else "n/a"
+    if ah.get("price") is not None and lang == "zh":
+        ah_line = (f"\n盤後（{at} PT 擷取）：{ah['price']:.2f}"
+                   f"（{ah['change_pct']:+.2f}%）"
+                   "。盤後成交稀薄，僅供參考，不可視為隔日開盤的預告。\n")
+    elif ah.get("price") is not None:
+        ah_line = (f"\nAfter hours (captured {at} PT): {ah['price']:.2f}"
+                   f" ({ah['change_pct']:+.2f}%). Thin liquidity — indicative only, "
+                   "not a prediction of the next open.\n")
+    else:
+        ah_line = ""
     if lang == "zh":
         user = f"""股票：{snap['ticker']}
 今日數據（資料日期 {snap['date']}）：收盤 {snap['close']:.2f}，漲跌 {snap['change_pct']:+.2f}%，
 成交量為 20 日均量的 {vol_txt}
-
+{ah_line}
 今日大盤與類股對照數據（請用來做量化比較）：
 {market_ctx}
 
@@ -719,7 +769,7 @@ def analyze_stock(cfg, lang, snap, market_ctx, news_items):
         user = f"""Stock: {snap['ticker']}
 Today's data (as of {snap['date']}): close {snap['close']:.2f}, change {snap['change_pct']:+.2f}%,
 volume at {vol_txt} of the 20-day average
-
+{ah_line}
 Market and sector reference data (use this for the quantified comparison):
 {market_ctx}
 
@@ -799,6 +849,8 @@ tr:nth-child(even) td { background: #f9fafb; }
 .ev-list { margin: 4px 0 2px 0; padding-left: 22px; font-size: 8.5pt; color: #334155; }
 .ev-list li { margin-bottom: 2px; line-height: 1.45; }
 .ev-meta { color: #94a3b8; }
+.ah-note { font-size: 8pt; color: #6b7280; line-height: 1.5;
+  margin: -6px 0 14px 0; padding-left: 2px; }
 .evidence a { color: #2563eb; text-decoration: none; }
 .stock-block p { margin: 5px 0; }
 .disclaimer { margin-top: 24px; padding: 9px 11px; border-top: 2px solid #cbd5e1;
@@ -867,13 +919,17 @@ def build_report_html(lang, sub, rows, failed, market_overview,
     wl_rows = ""
     for r in rows:
         vol_txt = f"{r['vol_ratio']:.2f}x" if r.get("vol_ratio") else "—"
+        ah = r.get("after") or {}
+        ah_px = f"{ah['price']:,.2f}" if ah.get("price") is not None else "—"
+        ah_chg = pct_html(ah["change_pct"]) if ah.get("change_pct") is not None else "—"
         wl_rows += (
             f"<tr><td><b>{r['ticker']}</b></td><td>{r['date']}</td>"
             f"<td>{r['close']:,.2f}</td><td>{pct_html(r['change_pct'])}</td>"
+            f"<td>{ah_px}</td><td>{ah_chg}</td>"
             f"<td>{vol_txt}</td></tr>"
         )
     for ft in failed:
-        wl_rows += f"<tr><td><b>{ft}</b></td><td colspan='4'>{t['failed_ticker']}</td></tr>"
+        wl_rows += f"<tr><td><b>{ft}</b></td><td colspan='6'>{t['failed_ticker']}</td></tr>"
 
     stocks_html = ""
     for r in rows:
@@ -902,9 +958,10 @@ def build_report_html(lang, sub, rows, failed, market_overview,
 
 <h2 class="section">{t['sec_watchlist']}</h2>
 <table>
-<tr><th>{t['th_ticker']}</th><th>{t['th_date']}</th><th>{t['th_close']}</th><th>{t['th_chg']}</th><th>{t['th_vol']}</th></tr>
+<tr><th>{t['th_ticker']}</th><th>{t['th_date']}</th><th>{t['th_close']}</th><th>{t['th_chg']}</th><th>{t['th_after']}</th><th>{t['th_after_chg']}</th><th>{t['th_vol']}</th></tr>
 {wl_rows}
 </table>
+<div class="ah-note">{t['ah_note'].format(at=AH_CAPTURED_AT.strftime('%H:%M') if AH_CAPTURED_AT else '—')}</div>
 
 <h2 class="section">{t['sec_stocks']}</h2>
 {stocks_html}
@@ -1072,6 +1129,21 @@ def main():
         else:
             failed_tickers.add(tk)
             print(f"  [警告] {tk} 無法取得價格")
+
+    # 盤後報價。財報多在美股收盤後公布，正常盤收盤價看不出那段反應，
+    # 而新聞卻抓得到 —— 不補這一段，AI 會拿到互相矛盾的訊號。
+    # 一次抓完並記錄時刻：盤後報價持續在動，沒有時間戳讀者無從判斷是幾點的數字。
+    global AH_CAPTURED_AT
+    AH_CAPTURED_AT = dt.datetime.now(LA)
+    print(f"抓取盤後報價（{AH_CAPTURED_AT.strftime('%H:%M')} PT）…")
+    ah_n = 0
+    for tk in snaps:
+        a = after_hours(tk)
+        if a:
+            snaps[tk]["after"] = a
+            ah_n += 1
+        time.sleep(0.3)
+    print(f"  {ah_n}/{len(snaps)} 檔有盤後報價（台股與指數無盤後交易）")
 
     # 3) 新聞（每檔只抓一次）
     news_days = int(cfg.get("news", {}).get("days", 3))

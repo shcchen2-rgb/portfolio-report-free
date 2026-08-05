@@ -47,6 +47,10 @@ TODAY = NOW_LA.date()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 FORCE = os.environ.get("FORCE") == "1"
 
+# 盤後報價的擷取時刻（洛杉磯時間）。盤後時段報價一直在動，
+# 不標時間的話讀者無從判斷這個數字是幾點的快照。
+AH_CAPTURED_AT = None
+
 QUOTA_MSG = ("（本次 AI 呼叫已達設定的上限，此段分析略過。"
              "如需分析更多檔數，請調高 config_free.yaml 的 max_total_ai_calls）")
 
@@ -222,6 +226,29 @@ def snapshot(ticker):
         "change_pct": change_pct,
         "vol_ratio": vol_ratio,
     }
+
+
+def after_hours(ticker):
+    """盤後報價。沒有盤後交易的標的（台股、指數）回 None。
+
+    走 Ticker.info —— fast_info 沒有 postMarketPrice 欄位。
+    每檔約 0.3 秒，29 檔約 10 秒，成本可接受。
+
+    postMarketChangePercent 的單位已經是百分點（實測 AAPL 312.4861 對
+    311.00 是 +0.4778%，欄位值就是 0.47785），不需要再乘 100。
+
+    ⚠️ 盤後成交稀薄、價差大，單筆大單就能拉動報價，且盤後漲跌不代表
+    隔日開盤會維持。報告上必須標示這點，不可與正常盤數字並列而不加註。
+    """
+    try:
+        info = yf.Ticker(ticker).info
+    except Exception as e:
+        print(f"  [警告] {ticker} 盤後報價抓取失敗：{str(e)[:80]}")
+        return None
+    price = _finite(info.get("postMarketPrice"))
+    if price is None:
+        return None
+    return {"price": price, "change_pct": _finite(info.get("postMarketChangePercent"))}
 
 
 def market_was_open_today():
@@ -470,12 +497,20 @@ def analyze_market(cfg, index_lines, sector_lines, market_news):
 
 def analyze_stock(cfg, h, snap, market_overview, peer_line, news_items):
     vol_txt = f"{snap['vol_ratio']:.2f} 倍（vs 20 日均量）" if snap.get("vol_ratio") else "無資料"
+    # 盤後那段要餵給 AI，否則它會讀到「財報後大漲」的新聞、卻只拿到沒反應的
+    # 正常盤收盤價，兩個訊號打架。
+    ah = snap.get("after") or {}
+    at = AH_CAPTURED_AT.strftime("%H:%M") if AH_CAPTURED_AT else "n/a"
+    ah_line = ((f"盤後（{at} PT 擷取）：{ah['price']:.2f}（{ah['change_pct']:+.2f}%）。"
+                "盤後成交稀薄，僅供參考，不可視為隔日開盤的預告。")
+               if ah.get("price") is not None else "")
     notes = h.get("notes", "")
     user = f"""標的：{h['ticker']} {h.get('name', '')}
 產業背景補充：{notes if notes else '（無）'}
 
 今日數據（資料日期 {snap['date']}）：
 收盤 {snap['close']:.2f}，漲跌 {snap['change_pct']:+.2f}%，量能 {vol_txt}
+{ah_line}
 
 今日大盤背景摘要（供判斷 beta 用）：
 {market_overview[:700]}
@@ -576,6 +611,8 @@ tr:nth-child(even) td { background: #f9fafb; }
 .ev-list { margin: 4px 0 2px 0; padding-left: 22px; font-size: 8.5pt; color: #334155; }
 .ev-list li { margin-bottom: 2px; line-height: 1.45; }
 .ev-meta { color: #94a3b8; }
+.ah-note { font-size: 8pt; color: #6b7280; line-height: 1.5;
+  margin: -6px 0 14px 0; padding-left: 2px; }
 .evidence a { color: #2563eb; text-decoration: none; }
 .disclaimer {
     margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb;
@@ -645,10 +682,14 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
     pf_rows = ""
     for r in holding_rows:
         vol_txt = f"{r['vol_ratio']:.2f}x" if r.get("vol_ratio") else "—"
+        ah = r.get("after") or {}
+        ah_px = f"{ah['price']:,.2f}" if ah.get("price") is not None else "—"
+        ah_chg = pct_html(ah["change_pct"]) if ah.get("change_pct") is not None else "—"
         pf_rows += (
             f"<tr><td><b>{r['ticker']}</b></td><td>{r['name']}</td>"
             f"<td>{r['date']}</td><td>{r['close']:,.2f}</td>"
-            f"<td>{pct_html(r['change_pct'])}</td><td>{vol_txt}</td></tr>"
+            f"<td>{pct_html(r['change_pct'])}</td>"
+            f"<td>{ah_px}</td><td>{ah_chg}</td><td>{vol_txt}</td></tr>"
         )
 
     stocks_html = ""
@@ -677,9 +718,10 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
 
 <h2 class="section">二、觀察標的總覽</h2>
 <table>
-<tr><th>代號</th><th>名稱</th><th>資料日期</th><th>收盤</th><th>漲跌幅</th><th>量能</th></tr>
+<tr><th>代號</th><th>名稱</th><th>資料日期</th><th>收盤</th><th>漲跌幅</th><th>盤後</th><th>盤後漲跌</th><th>量能</th></tr>
 {pf_rows}
 </table>
+<div class="ah-note">盤後報價擷取時間：{AH_CAPTURED_AT.strftime('%H:%M') if AH_CAPTURED_AT else '—'} PT。盤後為正常盤收盤後的延長交易時段，成交稀薄、買賣價差大，單筆委託即可牽動報價，且盤後漲跌不代表隔日開盤會延續。台股與指數無盤後交易，以「—」表示。</div>
 
 <h2 class="section">三、個股漲跌原因分析</h2>
 {stocks_html}
@@ -783,6 +825,19 @@ def main():
     if not holding_rows:
         print("錯誤：所有標的都抓不到價格，中止。")
         sys.exit(1)
+
+    # 盤後報價（與多人版同一套做法，見 daily_brief_multi.py 的說明）
+    global AH_CAPTURED_AT
+    AH_CAPTURED_AT = dt.datetime.now(LA)
+    print(f"抓取盤後報價（{AH_CAPTURED_AT.strftime('%H:%M')} PT）…")
+    ah_n = 0
+    for r in holding_rows:
+        a = after_hours(r["ticker"])
+        if a:
+            r["after"] = a
+            ah_n += 1
+        time.sleep(0.3)
+    print(f"  {ah_n}/{len(holding_rows)} 檔有盤後報價（台股與指數無盤後交易）")
 
     peer_line = "、".join(f"{r['ticker']} {r['change_pct']:+.2f}%" for r in holding_rows)
     index_lines = "\n".join(f"- {n}：{s['close']:,.2f}（{s['change_pct']:+.2f}%）"
