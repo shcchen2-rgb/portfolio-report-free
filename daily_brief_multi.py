@@ -86,6 +86,9 @@ L = {
         "ah_note": ("盤後報價擷取時間：{at} PT。盤後為正常盤收盤後的延長交易時段，"
                     "成交稀薄、買賣價差大，單筆委託即可牽動報價，且盤後漲跌不代表"
                     "隔日開盤會延續。台股與指數無盤後交易，以「—」表示。"),
+        "vol_note": ("量能 = 當日成交量 ÷ 前 20 個交易日平均成交量（分母不含當日）。"
+                     "1.0x 代表與近期平均持平，數字越大表示今日交易越活躍。{short}"),
+        "vol_short": "標示 * 者可用資料不足 20 個交易日，分母改以實際天數計算：{list}。",
         "failed_ticker": "無法取得此代號的價格資料，請確認代號（美股直接打代號、台股加 .TW / 上櫃 .TWO）。",
         "subtitle": "資料來源：Yahoo Finance（市場數據）、Google News（新聞來源）",
         "disclosure_title": "方法論與重要聲明",
@@ -111,6 +114,11 @@ L = {
                     "thin, spreads are wide and a single order can move the print; an "
                     "after-hours move does not imply the next open will follow. Taiwan "
                     "listings and indices have no after-hours session, shown as \u201c—\u201d."),
+        "vol_note": ("Volume = today's share volume divided by the average of the "
+                     "previous 20 trading days (today excluded). 1.0x means in line "
+                     "with the recent average; higher means busier trading. {short}"),
+        "vol_short": ("Entries marked * had fewer than 20 trading days available, so "
+                      "the denominator uses the actual number of days: {list}."),
         "failed_ticker": "Price data unavailable — please double-check the ticker (US tickers as-is; Taiwan listed = .TW, OTC = .TWO).",
         "subtitle": "Sources: Yahoo Finance (market data), Google News (headlines)",
         "disclosure_title": "Methodology & Disclosures",
@@ -405,12 +413,21 @@ def snapshot(ticker):
 
     change_pct = (close - prev_close) / prev_close * 100
 
-    vol_ratio = None
+    # 量能 = 當日成交量 ÷ 前 20 個交易日均量（分母不含當日）。
+    # 一併回傳分母實際用了幾天：iloc[-21:-1] 在資料不足時會自動縮短，
+    # 舊版對此毫無標示，7 個交易日的新股也會算出一個號稱「20 日均量」
+    # 的數字。報告需要據此加註，不能讓讀者誤以為都是同一個基準。
+    vol_ratio, vol_days = None, 0
     vol = _finite(last.get("Volume"))
-    if vol is not None and len(hist) > 6:
-        avg_vol = _finite(hist["Volume"].iloc[-21:-1].mean())
-        if avg_vol:
-            vol_ratio = vol / avg_vol
+    if vol is not None:
+        window = hist["Volume"].iloc[-21:-1].dropna()
+        vol_days = len(window)
+        if vol_days >= 2:
+            avg_vol = _finite(window.mean())
+            if avg_vol:
+                vol_ratio = vol / avg_vol
+        else:
+            vol_days = 0
 
     return {
         "ticker": ticker,
@@ -419,6 +436,7 @@ def snapshot(ticker):
         "prev_close": prev_close,
         "change_pct": change_pct,
         "vol_ratio": vol_ratio,
+        "vol_days": vol_days,
     }
 
 
@@ -918,7 +936,9 @@ def build_report_html(lang, sub, rows, failed, market_overview,
 
     wl_rows = ""
     for r in rows:
-        vol_txt = f"{r['vol_ratio']:.2f}x" if r.get("vol_ratio") else "—"
+        vd = r.get("vol_days", 0)
+        vol_txt = (f"{r['vol_ratio']:.2f}x{'*' if 0 < vd < 20 else ''}"
+                   if r.get("vol_ratio") else "—")
         ah = r.get("after") or {}
         ah_px = f"{ah['price']:,.2f}" if ah.get("price") is not None else "—"
         ah_chg = pct_html(ah["change_pct"]) if ah.get("change_pct") is not None else "—"
@@ -930,6 +950,13 @@ def build_report_html(lang, sub, rows, failed, market_overview,
         )
     for ft in failed:
         wl_rows += f"<tr><td><b>{ft}</b></td><td colspan='6'>{t['failed_ticker']}</td></tr>"
+
+    # 分母不足 20 日的標的要逐一列出天數，只放一個星號讀者無從判斷差多少
+    short = [f"{r['ticker']} {r['vol_days']}" + ("日" if lang == "zh" else "d")
+             for r in rows if r.get("vol_ratio") and 0 < r.get("vol_days", 0) < 20]
+    vol_note = t["vol_note"].format(
+        short=t["vol_short"].format(list="、".join(short) if lang == "zh"
+                                    else ", ".join(short)) if short else "")
 
     stocks_html = ""
     for r in rows:
@@ -962,6 +989,7 @@ def build_report_html(lang, sub, rows, failed, market_overview,
 {wl_rows}
 </table>
 <div class="ah-note">{t['ah_note'].format(at=AH_CAPTURED_AT.strftime('%H:%M') if AH_CAPTURED_AT else '—')}</div>
+<div class="ah-note">{vol_note}</div>
 
 <h2 class="section">{t['sec_stocks']}</h2>
 {stocks_html}

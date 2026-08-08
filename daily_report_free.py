@@ -211,12 +211,21 @@ def snapshot(ticker):
 
     change_pct = (close - prev_close) / prev_close * 100
 
-    vol_ratio = None
+    # 量能 = 當日成交量 ÷ 前 20 個交易日均量（分母不含當日）。
+    # 一併回傳分母實際用了幾天：iloc[-21:-1] 在資料不足時會自動縮短，
+    # 舊版對此毫無標示，7 個交易日的新股也會算出一個號稱「20 日均量」
+    # 的數字。報告需要據此加註，不能讓讀者誤以為都是同一個基準。
+    vol_ratio, vol_days = None, 0
     vol = _finite(last.get("Volume"))
-    if vol is not None and len(hist) > 6:
-        avg_vol = _finite(hist["Volume"].iloc[-21:-1].mean())
-        if avg_vol:
-            vol_ratio = vol / avg_vol
+    if vol is not None:
+        window = hist["Volume"].iloc[-21:-1].dropna()
+        vol_days = len(window)
+        if vol_days >= 2:
+            avg_vol = _finite(window.mean())
+            if avg_vol:
+                vol_ratio = vol / avg_vol
+        else:
+            vol_days = 0
 
     return {
         "ticker": ticker,
@@ -225,6 +234,7 @@ def snapshot(ticker):
         "prev_close": prev_close,
         "change_pct": change_pct,
         "vol_ratio": vol_ratio,
+        "vol_days": vol_days,
     }
 
 
@@ -681,7 +691,9 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
 
     pf_rows = ""
     for r in holding_rows:
-        vol_txt = f"{r['vol_ratio']:.2f}x" if r.get("vol_ratio") else "—"
+        vd = r.get("vol_days", 0)
+        vol_txt = (f"{r['vol_ratio']:.2f}x{'*' if 0 < vd < 20 else ''}"
+                   if r.get("vol_ratio") else "—")
         ah = r.get("after") or {}
         ah_px = f"{ah['price']:,.2f}" if ah.get("price") is not None else "—"
         ah_chg = pct_html(ah["change_pct"]) if ah.get("change_pct") is not None else "—"
@@ -691,6 +703,14 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
             f"<td>{pct_html(r['change_pct'])}</td>"
             f"<td>{ah_px}</td><td>{ah_chg}</td><td>{vol_txt}</td></tr>"
         )
+
+    # 分母不足 20 日的標的要逐一列出天數，只放一個星號讀者無從判斷差多少
+    short = [f"{r['ticker']} {r['vol_days']}日" for r in holding_rows
+             if r.get("vol_ratio") and 0 < r.get("vol_days", 0) < 20]
+    vol_note = ("量能 = 當日成交量 ÷ 前 20 個交易日平均成交量（分母不含當日）。"
+                "1.0x 代表與近期平均持平，數字越大表示今日交易越活躍。"
+                + (f"標示 * 者可用資料不足 20 個交易日，分母改以實際天數計算："
+                   + "、".join(short) + "。" if short else ""))
 
     stocks_html = ""
     for r, analysis, news_items in stock_sections:
@@ -722,6 +742,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
 {pf_rows}
 </table>
 <div class="ah-note">盤後報價擷取時間：{AH_CAPTURED_AT.strftime('%H:%M') if AH_CAPTURED_AT else '—'} PT。盤後為正常盤收盤後的延長交易時段，成交稀薄、買賣價差大，單筆委託即可牽動報價，且盤後漲跌不代表隔日開盤會延續。台股與指數無盤後交易，以「—」表示。</div>
+<div class="ah-note">{vol_note}</div>
 
 <h2 class="section">三、個股漲跌原因分析</h2>
 {stocks_html}
