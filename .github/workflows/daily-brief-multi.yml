@@ -56,6 +56,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # 「修改我的觀察清單」連結的簽章密鑰。必須與網站 Cloudflare 的
+          # ELNATH_LINK_SECRET、Apps Script 的 LINK_SECRET 完全相同。
+          # GitHub Secrets 不會自動變成環境變數，一定要在這裡明確對應。
+          # 沒設的話 sign_token() 回空字串，信件會少掉那條連結但仍正常寄出。
+          ELNATH_LINK_SECRET: ${{ secrets.ELNATH_LINK_SECRET }}
         run: python daily_brief_multi.py
 
       - name: 備份全部 PDF（保留 30 天；dry_run 時也用來檢查版面）

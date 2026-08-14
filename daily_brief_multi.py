@@ -10,6 +10,9 @@
 測試：DRY_RUN=1（跳過 AI 與寄信）、FORCE=1（休市日強制執行）
 """
 
+import base64
+import hashlib
+import hmac
 import os
 import random
 import re
@@ -38,6 +41,39 @@ from weasyprint import HTML
 # 基本設定
 # ------------------------------------------------------------
 LA = ZoneInfo("America/Los_Angeles")
+
+SITE_URL = "https://elnathacademy.com"
+
+# CAN-SPAM 要求每封商業信件都要有有效的實體郵寄地址並識別寄件者。
+# 第一行的法律實體全名是必要的，不是裝飾。
+POSTAL_ADDRESS = "Elnath Finance Academy LLC, 3021 Van Buren Pl, Los Angeles, CA 90007"
+
+
+def sign_token(action: str, email: str) -> str:
+    """簽章連結用的權杖。
+
+    必須與網站 lib/token.ts、Apps Script signToken_()、daily-brief repo 的
+    同名函式算出完全相同的結果，四端才驗得過。
+    email 一律去空白轉小寫後才簽 —— 大小寫不同就會驗不過。
+
+    沒設 ELNATH_LINK_SECRET 時回傳空字串，呼叫端會略過連結而不是讓整批寄送
+    掛掉：少一條連結比整天沒有報告好。
+    """
+    secret = os.environ.get("ELNATH_LINK_SECRET", "").strip()
+    if not secret:
+        return ""
+    msg = f"{action}:{email.strip().lower()}".encode()
+    sig = hmac.new(secret.encode(), msg, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(sig).decode().rstrip("=")
+
+
+def watchlist_url(email: str, lang: str = "zh") -> str:
+    """「修改我的觀察清單」連結。沒有它，/watchlist 頁面就沒有任何入口。"""
+    sig = sign_token("watchlist", email)
+    if not sig:
+        return ""
+    return (f"{SITE_URL}/{lang}/watchlist"
+            f"?e={quote(email.strip().lower(), safe='')}&t={sig}")
 NOW_LA = dt.datetime.now(LA)
 TODAY = NOW_LA.date()
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
@@ -96,6 +132,8 @@ L = {
         "disclaimer": "本報告以量化市場數據（Yahoo Finance）與公開新聞來源自動彙整產生，分析內容經演算法生成、未經人工覆核，資料可能延遲或有誤。所有結論之依據皆已標註來源編號，敬請自行查證原文。本報告為一般性資訊，不構成投資建議、亦非任何證券之買賣邀約，不考量個別讀者之財務狀況或投資目標。投資決策請自行判斷並諮詢合格專業人士。",
         "email_intro": "您的每日股票觀察報告已產生（詳細分析請見附件 PDF）：",
         "email_unsub": "本報告為一般性資訊，不構成投資建議；完整聲明請見附件末頁。如需取消訂閱，直接回覆此信告知即可。",
+        "email_edit": "修改我的觀察清單",
+        "email_edit_hint": "想新增或移除股票？點上面的連結即可自行修改，改完下一份報告就會生效。",
         "fmt_driver": "**主要原因**：…\n**產業鏈觀察**：…\n**與大盤/類股的關係**：…\n**後續觀察**：…",
     },
     "en": {
@@ -126,6 +164,8 @@ L = {
         "disclaimer": "This report is compiled automatically from quantitative market data (Yahoo Finance) and public news sources; the analysis is algorithmically generated and not reviewed by a human. Data may be delayed or inaccurate. Every conclusion is tagged to a numbered source — readers are encouraged to verify the originals. This is general information only, not investment advice or an offer to buy or sell any security, and does not consider any individual's financial situation or objectives. Please make your own decisions and consult a qualified professional.",
         "email_intro": "Your daily stock watchlist brief is ready (see the attached PDF for full analysis):",
         "email_unsub": "General information only — not investment advice. Full disclosures appear on the final page of the attached report. Reply to this email anytime to unsubscribe.",
+        "email_edit": "Edit my watchlist",
+        "email_edit_hint": "Want to add or remove a stock? Use the link above — changes take effect with the next report.",
         "fmt_driver": "**Key driver**: …\n**Industry-chain view**: …\n**Versus market & sector**: …\n**What to watch**: …",
     },
 }
@@ -1043,19 +1083,39 @@ def send_all_emails(cfg, deliveries):
             )
             intro = "<br>".join(L[lg]["email_intro"] for lg in langs)
             unsub = "<br>".join(L[lg]["email_unsub"] for lg in langs)
+
+            # 「修改我的觀察清單」連結。簽章綁定信箱，所以必須逐封產生，不能共用。
+            edit_link = watchlist_url(
+                sub["email"], main_lang if main_lang in ("zh", "en") else "zh")
+            edit_html = ""
+            if edit_link:
+                labels = "／".join(L[lg]["email_edit"] for lg in langs)
+                hints = "<br>".join(L[lg]["email_edit_hint"] for lg in langs)
+                edit_html = (
+                    f'<p style="margin-top:20px"><a href="{edit_link}" '
+                    f'style="color:#0f2350;font-weight:600">{labels}</a></p>'
+                    f'<p style="color:#6b7280;font-size:12px">{hints}</p>'
+                )
+
             body = f"""<div style="font-family:sans-serif;font-size:14px">
 <p>{sub['name']}，</p><p>{intro}</p>
 <table border="0" cellpadding="4" style="border-collapse:collapse;font-size:13px">
 <tr style="background:#f0fdf4"><th align="left">Ticker</th><th>Close</th><th>Chg</th></tr>
 {wl}
 </table>
-<p style="color:#6b7280;font-size:12px">{unsub}</p>
+{edit_html}
+<p style="color:#6b7280;font-size:12px;border-top:1px solid #eee;padding-top:10px;margin-top:20px">
+{unsub}<br>{POSTAL_ADDRESS}</p>
 </div>"""
 
             msg = MIMEMultipart()
             msg["From"] = formataddr((sender_name, addr))
             msg["To"] = sub["email"]
             msg["Subject"] = subject
+            # 讓 Gmail 顯示原生的「取消訂閱」按鈕，比讓人按「檢舉垃圾郵件」好得多。
+            # 只給 mailto：這套的退訂目前仍是人工回信處理，還沒有像 Daily Brief
+            # 那樣的退訂頁，不能謊稱有一鍵退訂網址。
+            msg["List-Unsubscribe"] = f"<mailto:{addr}?subject=unsubscribe>"
             msg.attach(MIMEText(body, "html", "utf-8"))
             for lg in langs:
                 p = d["pdfs"].get(lg)
