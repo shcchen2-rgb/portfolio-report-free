@@ -60,7 +60,7 @@ INDEXES = [
     ("^DJI", "道瓊工業"),
     ("^SOX", "費城半導體"),
     ("^VIX", "VIX 恐慌指數"),
-    ("^TNX", "美債10年殖利率(%)"),
+    ("^TNX", "美債10年殖利率"),
 ]
 
 SECTORS = [
@@ -642,6 +642,38 @@ def build_css(cfg):
     return CSS_TEMPLATE.replace("__UP_COLOR__", up).replace("__DOWN_COLOR__", down)
 
 
+# 殖利率不是價格，用百分比變化描述會誤導：4.706% → 4.653% 是「跌了 5.3 個
+# 基點」，不是「跌了 1.13%」。債市一律用 bp（1 bp = 0.01 個百分點）。
+# 三位小數是 ^TNX 的來源精度（Yahoo 給 4.653；更多位是 float32 誤差，
+# 不是真的精確度）。三位小數 = 0.1 bp，所以 bp 也給到小數一位。
+YIELD_SYMBOLS = {"^TNX"}
+
+
+def is_yield(snap):
+    return snap.get("ticker") in YIELD_SYMBOLS
+
+
+def fmt_level(snap):
+    """指數點位／殖利率水準的顯示字串。"""
+    if is_yield(snap):
+        return f"{snap['close']:.3f}%"
+    return f"{snap['close']:,.2f}"
+
+
+def fmt_change(snap):
+    """變化量。殖利率給 bp，其餘給百分比。"""
+    if is_yield(snap):
+        return f"{(snap['close'] - snap['prev_close']) * 100:+.1f} bp"
+    return f"{snap['change_pct']:+.2f}%"
+
+
+def change_html(snap):
+    """帶漲跌配色的變化量（配色規則見 build_css）。"""
+    v = snap["change_pct"]
+    cls = "up" if v > 0 else ("down" if v < 0 else "flat")
+    return f'<span class="{cls}">{fmt_change(snap)}</span>'
+
+
 def pct_html(p):
     if p is None:
         return '<span class="flat">—</span>'
@@ -680,7 +712,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
     title = cfg.get("report", {}).get("title", "每日投資組合分析報告")
 
     idx_rows = "".join(
-        f"<tr><td>{name}</td><td>{s['close']:,.2f}</td><td>{pct_html(s['change_pct'])}</td></tr>"
+        f"<tr><td>{name}</td><td>{fmt_level(s)}</td><td>{change_html(s)}</td></tr>"
         for name, s in index_snaps
     )
     sec_sorted = sorted(sector_snaps, key=lambda x: x[1]["change_pct"], reverse=True)
@@ -733,7 +765,7 @@ def build_report_html(cfg, index_snaps, sector_snaps, holding_rows,
 
 <h2 class="section first">一、大盤與總經</h2>
 {md_to_html(market_overview)}
-<table><tr><th>指數</th><th>收盤</th><th>漲跌幅</th></tr>{idx_rows}</table>
+<table><tr><th>指數</th><th>收盤</th><th>漲跌</th></tr>{idx_rows}</table>
 <table><tr><th>ETF</th><th>類股</th><th>漲跌幅</th></tr>{sec_rows}</table>
 
 <h2 class="section">二、觀察標的總覽</h2>
@@ -861,7 +893,7 @@ def main():
     print(f"  {ah_n}/{len(holding_rows)} 檔有盤後報價（台股與指數無盤後交易）")
 
     peer_line = "、".join(f"{r['ticker']} {r['change_pct']:+.2f}%" for r in holding_rows)
-    index_lines = "\n".join(f"- {n}：{s['close']:,.2f}（{s['change_pct']:+.2f}%）"
+    index_lines = "\n".join(f"- {n}：{fmt_level(s)}（{fmt_change(s)}）"
                             for n, s in index_snaps)
     sector_lines = "\n".join(f"- {s['ticker']} {n}：{s['change_pct']:+.2f}%"
                              for n, s in sector_snaps)

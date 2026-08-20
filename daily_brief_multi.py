@@ -91,7 +91,7 @@ INDEXES = [
     ("^DJI", "道瓊工業", "Dow Jones"),
     ("^SOX", "費城半導體", "PHLX Semiconductor"),
     ("^VIX", "VIX 恐慌指數", "VIX"),
-    ("^TNX", "美債10年殖利率(%)", "US 10Y Treasury Yield (%)"),
+    ("^TNX", "美債10年殖利率", "US 10Y Treasury Yield"),
 ]
 
 SECTORS = [
@@ -114,7 +114,7 @@ L = {
         "sec_watchlist": "二、觀察清單總覽",
         "sec_stocks": "三、個股漲跌原因分析",
         "sec_synth": "四、綜合觀察",
-        "th_index": "指數", "th_close": "收盤", "th_chg": "漲跌幅",
+        "th_index": "指數", "th_close": "收盤", "th_chg": "漲跌",
         "th_etf": "ETF", "th_sector": "類股",
         "th_ticker": "代號", "th_date": "資料日期", "th_vol": "量能",
         "th_after": "盤後", "th_after_chg": "盤後漲跌",
@@ -929,6 +929,38 @@ def build_css(lang):
     return CSS_TEMPLATE.replace("__UP_COLOR__", up).replace("__DOWN_COLOR__", down)
 
 
+# 殖利率不是價格，用百分比變化描述會誤導：4.706% → 4.653% 是「跌了 5.3 個
+# 基點」，不是「跌了 1.13%」。債市一律用 bp（1 bp = 0.01 個百分點）。
+# 三位小數是 ^TNX 的來源精度（Yahoo 給 4.653；更多位是 float32 誤差，
+# 不是真的精確度）。三位小數 = 0.1 bp，所以 bp 也給到小數一位。
+YIELD_SYMBOLS = {"^TNX"}
+
+
+def is_yield(snap):
+    return snap.get("ticker") in YIELD_SYMBOLS
+
+
+def fmt_level(snap):
+    """指數點位／殖利率水準的顯示字串。"""
+    if is_yield(snap):
+        return f"{snap['close']:.3f}%"
+    return f"{snap['close']:,.2f}"
+
+
+def fmt_change(snap):
+    """變化量。殖利率給 bp，其餘給百分比。"""
+    if is_yield(snap):
+        return f"{(snap['close'] - snap['prev_close']) * 100:+.1f} bp"
+    return f"{snap['change_pct']:+.2f}%"
+
+
+def change_html(snap):
+    """帶漲跌配色的變化量（配色規則見 build_css）。"""
+    v = snap["change_pct"]
+    cls = "up" if v > 0 else ("down" if v < 0 else "flat")
+    return f'<span class="{cls}">{fmt_change(snap)}</span>'
+
+
 def pct_html(p):
     if p is None:
         return '<span class="flat">—</span>'
@@ -965,7 +997,7 @@ def build_report_html(lang, sub, rows, failed, market_overview,
     css = build_css(lang)
 
     idx_rows = "".join(
-        f"<tr><td>{n[lang]}</td><td>{s['close']:,.2f}</td><td>{pct_html(s['change_pct'])}</td></tr>"
+        f"<tr><td>{n[lang]}</td><td>{fmt_level(s)}</td><td>{change_html(s)}</td></tr>"
         for n, s in index_snaps
     )
     sec_sorted = sorted(sector_snaps, key=lambda x: x[1]["change_pct"], reverse=True)
@@ -1248,7 +1280,7 @@ def main():
     # 各語言的市場對照數據（供個股做量化比較）
     ctx_lines = {}
     for lg in langs_needed:
-        idx = "\n".join(f"- {n[lg]}: {s['close']:,.2f} ({s['change_pct']:+.2f}%)"
+        idx = "\n".join(f"- {n[lg]}: {fmt_level(s)} ({fmt_change(s)})"
                         for n, s in index_snaps)
         sec = "\n".join(f"- {s['ticker']} {n[lg]}: {s['change_pct']:+.2f}%"
                         for n, s in sector_snaps)
@@ -1268,7 +1300,7 @@ def main():
     else:
         for lg in langs_needed:
             print(f"AI：大盤摘要（{lg}）…")
-            idx_lines = "\n".join(f"- {n[lg]}: {s['close']:,.2f} ({s['change_pct']:+.2f}%)"
+            idx_lines = "\n".join(f"- {n[lg]}: {fmt_level(s)} ({fmt_change(s)})"
                                   for n, s in index_snaps)
             sec_lines = "\n".join(f"- {s['ticker']} {n[lg]}: {s['change_pct']:+.2f}%"
                                   for n, s in sector_snaps)
