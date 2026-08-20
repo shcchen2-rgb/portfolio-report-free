@@ -1082,12 +1082,33 @@ def safe_filename(name):
 # ------------------------------------------------------------
 # Email
 # ------------------------------------------------------------
+def is_test_mode():
+    """測試模式：Actions 頁面手動選 test 時啟用。
+
+    ⚠️ 這個模式改寄給 TEST_RECIPIENTS，不會碰到真實訂閱者。
+    以前 mode=test 只做「休市照跑」，收件人完全沒變 —— 名稱叫 test
+    卻會寄給全部訂閱者，是個很容易誤觸的陷阱。
+    """
+    return os.environ.get("RUN_MODE", "auto").strip().lower() == "test"
+
+
+def test_recipients():
+    """測試收件人（TEST_RECIPIENTS Secret，逗號分隔；沒設就寄給寄件者自己）。"""
+    raw = os.environ.get("TEST_RECIPIENTS", "").replace("\n", ",")
+    emails = [e.strip() for e in raw.split(",") if "@" in e]
+    return emails or [os.environ["GMAIL_ADDRESS"]]
+
+
 def send_all_emails(cfg, deliveries):
     """deliveries: list of dicts {sub, pdfs: {lang: path}, rows}"""
     addr = os.environ["GMAIL_ADDRESS"]
     pwd = os.environ["GMAIL_APP_PASSWORD"]
     sender_name = cfg.get("email", {}).get("sender_name", "Daily Stock Brief")
     ok = fail = 0
+    testing = is_test_mode()
+    if testing:
+        print(f"[測試模式] 收件人改為 {', '.join(test_recipients())}，"
+              f"不會寄給任何真實訂閱者")
     print(f"準備寄送給 {len(deliveries)} 位訂閱者：")
     for d in deliveries:
         pdf_langs = list(d["pdfs"].keys())
@@ -1108,6 +1129,12 @@ def send_all_emails(cfg, deliveries):
             else:
                 subject = f"📈 Daily Stock Watchlist Brief {TODAY}"
 
+            # 測試模式改寄給自己：每位訂閱者的報告仍逐份產生並寄出，
+            # 所以看得到每個人實際會收到的樣子（含個人化清單與附件）。
+            to_list = test_recipients() if testing else [sub["email"]]
+            if testing:
+                subject = f"[測試·原收件人 {sub['email']}] {subject}"
+
             wl = "".join(
                 f"<tr><td>{r['ticker']}</td><td style='text-align:right'>{r['close']:,.2f}</td>"
                 f"<td style='text-align:right'>{r['change_pct']:+.2f}%</td></tr>"
@@ -1117,8 +1144,11 @@ def send_all_emails(cfg, deliveries):
             unsub = "<br>".join(L[lg]["email_unsub"] for lg in langs)
 
             # 「修改我的觀察清單」連結。簽章綁定信箱，所以必須逐封產生，不能共用。
+            # 測試模式綁定「實際收件人」而不是原訂閱者 —— 否則測試信裡的連結
+            # 一點下去就會改到真實訂閱者的觀察清單。
+            link_email = to_list[0] if testing else sub["email"]
             edit_link = watchlist_url(
-                sub["email"], main_lang if main_lang in ("zh", "en") else "zh")
+                link_email, main_lang if main_lang in ("zh", "en") else "zh")
             edit_html = ""
             if edit_link:
                 labels = "／".join(L[lg]["email_edit"] for lg in langs)
@@ -1142,7 +1172,7 @@ def send_all_emails(cfg, deliveries):
 
             msg = MIMEMultipart()
             msg["From"] = formataddr((sender_name, addr))
-            msg["To"] = sub["email"]
+            msg["To"] = ", ".join(to_list)
             msg["Subject"] = subject
             # 讓 Gmail 顯示原生的「取消訂閱」按鈕，比讓人按「檢舉垃圾郵件」好得多。
             # 只給 mailto：這套的退訂目前仍是人工回信處理，還沒有像 Daily Brief
@@ -1160,7 +1190,8 @@ def send_all_emails(cfg, deliveries):
             try:
                 s.send_message(msg)
                 ok += 1
-                print(f"  已寄送：{sub['name']} <{sub['email']}>（{'+'.join(langs)}）")
+                dest = "測試信箱" if testing else sub["email"]
+                print(f"  已寄送：{sub['name']} → {dest}（{'+'.join(langs)}）")
             except Exception as e:
                 fail += 1
                 print(f"  [錯誤] 寄送失敗 {sub['email']}：{e}")

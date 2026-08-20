@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "執行模式（auto=正式，休市不寄；test=測試，休市也強制跑）"
+        description: "執行模式（auto=正式，寄給訂閱者；test=只寄給自己的測試信箱，休市也跑）"
         type: choice
         required: false
         default: auto
@@ -49,6 +49,11 @@ jobs:
         env:
           # test 模式＝休市日也強制執行（分析最近一個交易日），auto 模式休市會自動跳過
           FORCE: ${{ (inputs.mode || 'auto') == 'test' && '1' || '' }}
+          # test 模式把收件人整批改成 TEST_RECIPIENTS，真實訂閱者完全不會收到。
+          # 外部 cron 觸發不帶 mode，預設 auto，行為不變。
+          RUN_MODE: ${{ inputs.mode || 'auto' }}
+          # 測試用的自己人信箱，逗號分隔；沒設就退回寄給 GMAIL_ADDRESS 自己
+          TEST_RECIPIENTS: ${{ secrets.TEST_RECIPIENTS }}
           # dry_run＝跑完整流程（含 AI 與 PDF）但不寄任何信
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           # Google 表單回應試算表的 CSV 網址（沒設就改讀 subscribers.yaml）
