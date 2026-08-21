@@ -652,12 +652,13 @@ def call_ai(cfg, system, user, lang, max_tokens=1200):
     if _ai_client is None:
         _ai_client = anthropic.Anthropic()
 
-    # SDK 內建 429／連線錯誤的指數退避重試，不需要自己寫重試迴圈
+    # SDK 內建 429／連線錯誤的指數退避重試，不需要自己寫重試迴圈。
+    # ⚠️ 不要加 temperature／top_p／top_k：anthropic SDK 1.0.0 已把這幾個參數從
+    #    messages.create() 的簽章拿掉，傳了會 TypeError（2026-08-20 事故）。
     try:
         resp = _ai_client.messages.create(
             model=cfg["ai"]["model"],
             max_tokens=max_tokens,
-            temperature=float(cfg["ai"].get("temperature", 0.4)),
             system=system,
             messages=[{"role": "user", "content": user}],
         )

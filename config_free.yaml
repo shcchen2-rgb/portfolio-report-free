@@ -12,12 +12,13 @@ ai:
   # claude-haiku-4-5：最便宜，12 檔持股一天約 14 次呼叫，一個月不到 US$2
   #
   # 想要更好的分析品質可改成 claude-sonnet-5（約貴一倍）。
-  # ⚠️ 注意：Sonnet 5 與 Opus 5 不接受 temperature 參數，換過去要把下面
-  #    temperature 那一行刪掉，否則 API 會回 400 錯誤。
   model: claude-haiku-4-5
 
-  # 溫度：越低越保守，減少 AI 腦補（沒有網路查證能力，建議偏低）
-  temperature: 0.4
+  # ⚠️ 這裡已經沒有 temperature 了，不要加回來。
+  #    anthropic SDK 1.0.0 把 temperature／top_p／top_k 從 messages.create()
+  #    的簽章整個拿掉，傳了會 TypeError（2026-08-20 事故：報告整份寄出但
+  #    每一段分析都變成「AI 分析產生失敗」）。
+  #    要壓抑 AI 腦補改用 prompt 約束，不要靠取樣參數。
 
   # 每次 AI 呼叫之間隔幾秒。Anthropic 的速率限制比之前寬鬆，
   # 但留一點間隔可避免撞到每分鐘上限
