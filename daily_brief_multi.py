@@ -85,6 +85,15 @@ MAX_TICKERS_PER_SUB = 15
 # 不標時間的話讀者無從判斷這個數字是幾點的快照。
 AH_CAPTURED_AT = None
 
+# 因「盤後基準與收盤價不是同一個交易日」而被略過的檔數。
+# 這跟「本來就沒有盤後交易」（台股、指數）是兩回事，報告註記要分開講，
+# 否則讀者看到「—」會以為那檔沒有盤後盤，而不是我們主動擋掉了。
+AH_SKIPPED_STALE = 0
+
+# 收盤價落後的標的，以及資料源認定的最新交易日。供報告註記與結束前的通知使用。
+STALE_ROWS = []
+EXPECTED_SESSION = None
+
 INDEXES = [
     ("^GSPC", "S&P 500", "S&P 500"),
     ("^IXIC", "那斯達克", "Nasdaq"),
@@ -337,6 +346,23 @@ _stale_tail_seen = 0
 _STALE_TAIL_GIVE_UP = 3
 
 
+def _session_likely_closed(tail):
+    """tail 那一列所屬的交易日是否已經結束。
+
+    不能只比日期。舊版寫 `tail.date() >= now.date()` 就直接判定「這場
+    交易還沒結束」而接受空值、連重試都不觸發 —— 但 17:20 PT 換算美東
+    是 20:20，當天 16:00 早就收盤了（2026-10-06 事故：美股整批沒有
+    任何重試紀錄，報告的收盤價安靜地退回前一個交易日）。
+
+    各主要股市都在當地 17:00 前收盤（美股 16:00 ET、台股 13:30），
+    所以用當地 18:00 當分界，留一小時緩衝給收盤後的資料整理。
+    """
+    now = dt.datetime.now(tail.tzinfo)
+    if now.date() > tail.date():
+        return True
+    return now.date() == tail.date() and now.hour >= 18
+
+
 def _valid_close_rows(hist):
     """有幾筆「收盤價真的存在」的日 K。
 
@@ -384,7 +410,7 @@ def fetch_history(ticker, period="1mo", retries=6, soft_retries=2):
                 # snapshot() 會退回前一個完整交易日。
                 # 只有日期已經是過去式，才代表資料遲到，值得再試。
                 tail = hist.index[-1]
-                if tail.date() >= dt.datetime.now(tail.tzinfo).date():
+                if not _session_likely_closed(tail):
                     return hist
                 # 已經確認這是 Yahoo 全站性的資料缺漏，就別再逐檔重試。
                 # 實測：Yahoo 對 2026-08-03 的 ^GSPC 等標的收盤數小時後仍是
@@ -480,7 +506,7 @@ def snapshot(ticker):
     }
 
 
-def after_hours(ticker):
+def after_hours(ticker, expected_close=None):
     """盤後報價。沒有盤後交易的標的（台股、指數）回 None。
 
     走 Ticker.info —— fast_info 沒有 postMarketPrice 欄位。
@@ -488,6 +514,14 @@ def after_hours(ticker):
 
     postMarketChangePercent 的單位已經是百分點（實測 AAPL 312.4861 對
     311.00 是 +0.4778%，欄位值就是 0.47785），不需要再乘 100。
+
+    ⚠️ expected_close 是這次要並排顯示的收盤價，**一定要傳**。
+    info 與 history() 是兩個端點，出檔進度可以不一致：
+    2026-10-06 17:20 PT 實測 history() 還停在 10/05，info 已經是 10/06，
+    於是報告並排了「10/05 的收盤」與「10/06 的盤後」。AVGO 那列
+    收盤 362.51、盤後 377.55，讀者自己算是 +4.15%，報告卻寫 +0.46%
+    （Yahoo 是拿 10/06 的收盤 375.81 當基準）。兩個數字單獨看都對，
+    並排就不成立。基準對不上時寧可整欄不顯示。
 
     ⚠️ 盤後成交稀薄、價差大，單筆大單就能拉動報價，且盤後漲跌不代表
     隔日開盤會維持。報告上必須標示這點，不可與正常盤數字並列而不加註。
@@ -497,10 +531,62 @@ def after_hours(ticker):
     except Exception as e:
         print(f"  [警告] {ticker} 盤後報價抓取失敗：{str(e)[:80]}")
         return None
+
     price = _finite(info.get("postMarketPrice"))
     if price is None:
         return None
+
+    regular = _finite(info.get("regularMarketPrice"))
+    if expected_close is not None and regular is not None:
+        # 容差取「1 分錢」與「萬分之五」的較大者：前者給低價股，
+        # 後者給高價股的浮點與四捨五入誤差。真的差一個交易日的話，
+        # 差距遠大於這個門檻（實測 AVGO 差 3.7%）。
+        tol = max(0.01, abs(expected_close) * 0.0005)
+        if abs(regular - expected_close) > tol:
+            global AH_SKIPPED_STALE
+            AH_SKIPPED_STALE += 1
+            print(f"  [略過] {ticker} 盤後基準收盤 {regular:,.2f} 與日 K 的 "
+                  f"{expected_close:,.2f} 不符，判定非同一交易日")
+            return None
+
     return {"price": price, "change_pct": _finite(info.get("postMarketChangePercent"))}
+
+
+def latest_session_from_quote(ticker="SPY"):
+    """資料源自己認定的「最新一個已收盤交易日」，回 date 或 None。
+
+    為什麼需要這個：info 與 history() 是兩個端點，出檔進度會不一致。
+    2026-10-06 17:20 PT 實測 history() 還停在 10/05，info 已經是 10/06 ——
+    報告因此並排了不同交易日的收盤與盤後。
+
+    用 info 的 regularMarketTime（最後一次正常盤收盤的時戳）當基準，
+    就能在不自己維護假日表的前提下知道「今天該有哪一天的資料」。
+    用 SPY 而非個股：流動性最高、最早出檔，個股晚一步是常態。
+    """
+    try:
+        t = yf.Ticker(ticker).info.get("regularMarketTime")
+    except Exception as e:
+        print(f"  [警告] 無法取得 {ticker} 的最新交易日：{str(e)[:80]}")
+        return None
+    if not isinstance(t, (int, float)):
+        return None
+    return dt.datetime.fromtimestamp(t, ZoneInfo("America/New_York")).date()
+
+
+def stale_us_tickers(snaps, expected):
+    """收盤價落後 expected 交易日的美股標的。
+
+    只看美股：台股在不同時區、指數另有自己的出檔節奏，一起比會製造假警報。
+    """
+    if expected is None:
+        return []
+    out = []
+    for tk, s in snaps.items():
+        if is_tw(tk) or tk.startswith("^"):
+            continue
+        if s.get("date") and s["date"] < expected.isoformat():
+            out.append((tk, s["date"]))
+    return out
 
 
 def market_was_open_today():
@@ -1100,6 +1186,33 @@ def test_recipients():
     return emails or [os.environ["GMAIL_ADDRESS"]]
 
 
+def notify_owner(subject, body):
+    """寄一封純文字通知給自己（不是給訂閱者）。
+
+    收件人用 TEST_RECIPIENTS，沒設就退回 GMAIL_ADDRESS。
+    用途是把「報告雖然寄出去了，但資料有問題」這件事主動推到 Howard 面前 ——
+    這種狀況不會讓 job 失敗，光看 Actions 的綠勾看不出來。
+    """
+    try:
+        addr = os.environ["GMAIL_ADDRESS"]
+        pwd = os.environ["GMAIL_APP_PASSWORD"]
+    except KeyError:
+        print("  [通知] 缺少 Gmail 設定，略過通知")
+        return
+    to = test_recipients()
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = addr
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = subject
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+            srv.login(addr, pwd)
+            srv.send_message(msg)
+        print(f"  [通知] 已寄出警示給 {', '.join(to)}")
+    except Exception as e:
+        print(f"  [通知] 寄送失敗：{str(e)[:120]}")
+
+
 def send_all_emails(cfg, deliveries):
     """deliveries: list of dicts {sub, pdfs: {lang: path}, rows}"""
     addr = os.environ["GMAIL_ADDRESS"]
@@ -1290,12 +1403,30 @@ def main():
     print(f"抓取盤後報價（{AH_CAPTURED_AT.strftime('%H:%M')} PT）…")
     ah_n = 0
     for tk in snaps:
-        a = after_hours(tk)
+        # 一定要把這次要並排顯示的收盤價傳進去，讓它確認是同一個交易日
+        a = after_hours(tk, expected_close=snaps[tk]["close"])
         if a:
             snaps[tk]["after"] = a
             ah_n += 1
         time.sleep(0.3)
-    print(f"  {ah_n}/{len(snaps)} 檔有盤後報價（台股與指數無盤後交易）")
+    print(f"  {ah_n}/{len(snaps)} 檔有盤後報價"
+          f"（台股與指數無盤後交易）")
+    if AH_SKIPPED_STALE:
+        print(f"  ⚠️ {AH_SKIPPED_STALE} 檔因盤後基準與收盤價非同一交易日而略過")
+
+    # 收盤價是否落後資料源自己認定的最新交易日。
+    # Yahoo 的 history() 偶爾會在收盤數小時後仍未出檔（2026-10-06 實測），
+    # snapshot() 會誠實退回前一個完整交易日 —— 報告本身沒說謊，
+    # 但那是一份「昨天的報告」，Howard 需要知道，否則只會看到 Actions 的綠勾。
+    global STALE_ROWS, EXPECTED_SESSION
+    EXPECTED_SESSION = latest_session_from_quote()
+    STALE_ROWS = stale_us_tickers(snaps, EXPECTED_SESSION)
+    if STALE_ROWS:
+        detail = "、".join(f"{tk}({d})" for tk, d in STALE_ROWS[:8])
+        if len(STALE_ROWS) > 8:
+            detail += f" 等 {len(STALE_ROWS)} 檔"
+        print(f"  ⚠️ 收盤價落後：資料源最新交易日為 {EXPECTED_SESSION}，"
+              f"但 {detail} 仍停在更早的日期")
 
     # 3) 新聞（每檔只抓一次）
     news_days = int(cfg.get("news", {}).get("days", 3))
@@ -1381,6 +1512,32 @@ def main():
         return
     send_all_emails(cfg, deliveries)
     print("完成。")
+
+    # 7) 資料落後就主動通知。
+    # 報告照常寄出 —— 資料日期欄誠實標示了，一份標好日期的昨日報告
+    # 仍優於完全不寄。但這件事不會讓 job 失敗，光看 Actions 的綠勾
+    # 永遠不會發現，所以用 email 推到 Howard 面前，並讓程式以非零碼結束
+    # （GitHub 會再發一次失敗通知，兩條管道不容易同時漏掉）。
+    if STALE_ROWS:
+        lines = "\n".join(f"  {tk}：報告用 {d}" for tk, d in STALE_ROWS)
+        notify_owner(
+            f"⚠️ 每日股票觀察報告 {TODAY}：收盤價落後一個交易日",
+            f"""報告已照常寄給訂閱者，但收盤價不是最新交易日的。
+
+資料源（Yahoo）認定的最新已收盤交易日：{EXPECTED_SESSION}
+報告實際採用的日期：
+
+{lines}
+
+成因通常是 Yahoo 的 history() 端點在收盤後數小時仍未出檔。
+程式已自動退回前一個完整交易日，報告的「資料日期」欄有如實標示，
+並且已停用盤後欄位（避免並排不同交易日的數字）。
+
+要補一份最新的，到 Actions 手動觸發 daily-brief-multi，
+mode 選 auto。通常晚上九點後 Yahoo 就補齊了。
+""")
+        raise SystemExit(
+            f"資料落後：{len(STALE_ROWS)} 檔的收盤價早於 {EXPECTED_SESSION}")
 
 
 if __name__ == "__main__":

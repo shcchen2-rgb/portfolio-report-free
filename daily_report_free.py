@@ -51,6 +51,11 @@ FORCE = os.environ.get("FORCE") == "1"
 # 不標時間的話讀者無從判斷這個數字是幾點的快照。
 AH_CAPTURED_AT = None
 
+# 因「盤後基準與收盤價不是同一個交易日」而被略過的檔數。
+# 這跟「本來就沒有盤後交易」（台股、指數）是兩回事，報告註記要分開講，
+# 否則讀者看到「—」會以為那檔沒有盤後盤，而不是我們主動擋掉了。
+AH_SKIPPED_STALE = 0
+
 QUOTA_MSG = ("（本次 AI 呼叫已達設定的上限，此段分析略過。"
              "如需分析更多檔數，請調高 config_free.yaml 的 max_total_ai_calls）")
 
@@ -93,6 +98,23 @@ def currency_of(ticker):
 # 不再逐檔軟重試 —— 否則整批標的每檔白等十幾秒。
 _stale_tail_seen = 0
 _STALE_TAIL_GIVE_UP = 3
+
+
+def _session_likely_closed(tail):
+    """tail 那一列所屬的交易日是否已經結束。
+
+    不能只比日期。舊版寫 `tail.date() >= now.date()` 就直接判定「這場
+    交易還沒結束」而接受空值、連重試都不觸發 —— 但 17:20 PT 換算美東
+    是 20:20，當天 16:00 早就收盤了（2026-10-06 事故：美股整批沒有
+    任何重試紀錄，報告的收盤價安靜地退回前一個交易日）。
+
+    各主要股市都在當地 17:00 前收盤（美股 16:00 ET、台股 13:30），
+    所以用當地 18:00 當分界，留一小時緩衝給收盤後的資料整理。
+    """
+    now = dt.datetime.now(tail.tzinfo)
+    if now.date() > tail.date():
+        return True
+    return now.date() == tail.date() and now.hour >= 18
 
 
 def _valid_close_rows(hist):
@@ -142,7 +164,7 @@ def fetch_history(ticker, period="1mo", retries=6, soft_retries=2):
                 # snapshot() 會退回前一個完整交易日。
                 # 只有日期已經是過去式，才代表資料遲到，值得再試。
                 tail = hist.index[-1]
-                if tail.date() >= dt.datetime.now(tail.tzinfo).date():
+                if not _session_likely_closed(tail):
                     return hist
                 # 已經確認這是 Yahoo 全站性的資料缺漏，就別再逐檔重試。
                 # 實測：Yahoo 對 2026-08-03 的 ^GSPC 等標的收盤數小時後仍是
@@ -238,7 +260,7 @@ def snapshot(ticker):
     }
 
 
-def after_hours(ticker):
+def after_hours(ticker, expected_close=None):
     """盤後報價。沒有盤後交易的標的（台股、指數）回 None。
 
     走 Ticker.info —— fast_info 沒有 postMarketPrice 欄位。
@@ -246,6 +268,14 @@ def after_hours(ticker):
 
     postMarketChangePercent 的單位已經是百分點（實測 AAPL 312.4861 對
     311.00 是 +0.4778%，欄位值就是 0.47785），不需要再乘 100。
+
+    ⚠️ expected_close 是這次要並排顯示的收盤價，**一定要傳**。
+    info 與 history() 是兩個端點，出檔進度可以不一致：
+    2026-10-06 17:20 PT 實測 history() 還停在 10/05，info 已經是 10/06，
+    於是報告並排了「10/05 的收盤」與「10/06 的盤後」。AVGO 那列
+    收盤 362.51、盤後 377.55，讀者自己算是 +4.15%，報告卻寫 +0.46%
+    （Yahoo 是拿 10/06 的收盤 375.81 當基準）。兩個數字單獨看都對，
+    並排就不成立。基準對不上時寧可整欄不顯示。
 
     ⚠️ 盤後成交稀薄、價差大，單筆大單就能拉動報價，且盤後漲跌不代表
     隔日開盤會維持。報告上必須標示這點，不可與正常盤數字並列而不加註。
@@ -255,10 +285,62 @@ def after_hours(ticker):
     except Exception as e:
         print(f"  [警告] {ticker} 盤後報價抓取失敗：{str(e)[:80]}")
         return None
+
     price = _finite(info.get("postMarketPrice"))
     if price is None:
         return None
+
+    regular = _finite(info.get("regularMarketPrice"))
+    if expected_close is not None and regular is not None:
+        # 容差取「1 分錢」與「萬分之五」的較大者：前者給低價股，
+        # 後者給高價股的浮點與四捨五入誤差。真的差一個交易日的話，
+        # 差距遠大於這個門檻（實測 AVGO 差 3.7%）。
+        tol = max(0.01, abs(expected_close) * 0.0005)
+        if abs(regular - expected_close) > tol:
+            global AH_SKIPPED_STALE
+            AH_SKIPPED_STALE += 1
+            print(f"  [略過] {ticker} 盤後基準收盤 {regular:,.2f} 與日 K 的 "
+                  f"{expected_close:,.2f} 不符，判定非同一交易日")
+            return None
+
     return {"price": price, "change_pct": _finite(info.get("postMarketChangePercent"))}
+
+
+def latest_session_from_quote(ticker="SPY"):
+    """資料源自己認定的「最新一個已收盤交易日」，回 date 或 None。
+
+    為什麼需要這個：info 與 history() 是兩個端點，出檔進度會不一致。
+    2026-10-06 17:20 PT 實測 history() 還停在 10/05，info 已經是 10/06 ——
+    報告因此並排了不同交易日的收盤與盤後。
+
+    用 info 的 regularMarketTime（最後一次正常盤收盤的時戳）當基準，
+    就能在不自己維護假日表的前提下知道「今天該有哪一天的資料」。
+    用 SPY 而非個股：流動性最高、最早出檔，個股晚一步是常態。
+    """
+    try:
+        t = yf.Ticker(ticker).info.get("regularMarketTime")
+    except Exception as e:
+        print(f"  [警告] 無法取得 {ticker} 的最新交易日：{str(e)[:80]}")
+        return None
+    if not isinstance(t, (int, float)):
+        return None
+    return dt.datetime.fromtimestamp(t, ZoneInfo("America/New_York")).date()
+
+
+def stale_us_tickers(snaps, expected):
+    """收盤價落後 expected 交易日的美股標的。
+
+    只看美股：台股在不同時區、指數另有自己的出檔節奏，一起比會製造假警報。
+    """
+    if expected is None:
+        return []
+    out = []
+    for tk, s in snaps.items():
+        if is_tw(tk) or tk.startswith("^"):
+            continue
+        if s.get("date") and s["date"] < expected.isoformat():
+            out.append((tk, s["date"]))
+    return out
 
 
 def market_was_open_today():
@@ -886,12 +968,14 @@ def main():
     print(f"抓取盤後報價（{AH_CAPTURED_AT.strftime('%H:%M')} PT）…")
     ah_n = 0
     for r in holding_rows:
-        a = after_hours(r["ticker"])
+        a = after_hours(r["ticker"], expected_close=r["close"])
         if a:
             r["after"] = a
             ah_n += 1
         time.sleep(0.3)
     print(f"  {ah_n}/{len(holding_rows)} 檔有盤後報價（台股與指數無盤後交易）")
+    if AH_SKIPPED_STALE:
+        print(f"  ⚠️ {AH_SKIPPED_STALE} 檔因盤後基準與收盤價非同一交易日而略過")
 
     peer_line = "、".join(f"{r['ticker']} {r['change_pct']:+.2f}%" for r in holding_rows)
     index_lines = "\n".join(f"- {n}：{fmt_level(s)}（{fmt_change(s)}）"
