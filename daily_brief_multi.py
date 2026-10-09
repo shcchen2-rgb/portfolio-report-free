@@ -132,8 +132,11 @@ L = {
                     "成交稀薄、買賣價差大，單筆委託即可牽動報價，且盤後漲跌不代表"
                     "隔日開盤會延續。台股與指數無盤後交易，以「—」表示。"),
         "vol_note": ("量能 = 當日成交量 ÷ 前 20 個交易日平均成交量（分母不含當日）。"
-                     "1.0x 代表與近期平均持平，數字越大表示今日交易越活躍。{short}"),
+                     "1.0x 代表與近期平均持平，數字越大表示今日交易越活躍。{short}{live}"),
         "vol_short": "標示 * 者可用資料不足 20 個交易日，分母改以實際天數計算：{list}。",
+        "vol_live": ("標示 † 者的當日成交量取自收盤即時報價，而非交易所最終"
+                     "合併量，實測偏低約 0.5%～5%，因此該列的量能倍數略為低估"
+                     "（收盤價本身不受影響）。"),
         "failed_ticker": "無法取得此代號的價格資料，請確認代號（美股直接打代號、台股加 .TW / 上櫃 .TWO）。",
         "subtitle": "資料來源：Yahoo Finance（市場數據）、Google News（新聞來源）",
         "disclosure_title": "方法論與重要聲明",
@@ -163,9 +166,13 @@ L = {
                     "listings and indices have no after-hours session, shown as \u201c—\u201d."),
         "vol_note": ("Volume = today's share volume divided by the average of the "
                      "previous 20 trading days (today excluded). 1.0x means in line "
-                     "with the recent average; higher means busier trading. {short}"),
+                     "with the recent average; higher means busier trading. {short}{live}"),
         "vol_short": ("Entries marked * had fewer than 20 trading days available, so "
                       "the denominator uses the actual number of days: {list}."),
+        "vol_live": ("For entries marked †, today's volume comes from the closing "
+                     "real-time quote rather than the exchange's final consolidated "
+                     "tape — measured 0.5%–5% lower — so that row's volume multiple is "
+                     "slightly understated. The closing price itself is unaffected."),
         "failed_ticker": "Price data unavailable — please double-check the ticker (US tickers as-is; Taiwan listed = .TW, OTC = .TWO).",
         "subtitle": "Sources: Yahoo Finance (market data), Google News (headlines)",
         "disclosure_title": "Methodology & Disclosures",
@@ -458,7 +465,60 @@ def _finite(v):
     return f if f == f else None      # f != f 只有 NaN 成立
 
 
-def snapshot(ticker):
+def market_tz(ticker):
+    """標的所屬市場的時區。
+
+    判斷「報價屬於哪一個交易日」一定要用當地時區：台股 13:30 收盤換算
+    美東是前一天晚上，用 ET 去取 date 會整批差一天。
+    """
+    return ZoneInfo("Asia/Taipei") if is_tw(ticker) else ZoneInfo("America/New_York")
+
+
+def fetch_quote(ticker):
+    """Ticker.info 抓一次，收盤與盤後共用。
+
+    為什麼要共用而不是各自呼叫：info 與 history() 是兩個端點，出檔進度
+    不一致，所以收盤價需要 info 來補（見 snapshot()）；而盤後報價本來
+    就只能從 info 拿。分開呼叫等於每檔多打一次請求。
+    """
+    try:
+        return yf.Ticker(ticker).info or {}
+    except Exception as e:
+        print(f"  [警告] {ticker} 報價端點抓取失敗：{str(e)[:80]}")
+        return {}
+
+
+def quote_session_date(info, ticker):
+    """info 這份報價屬於哪一個**已結束**的交易日（回 date 或 None）。
+
+    regularMarketTime 是「最後一筆正常盤成交」的時戳，所以換算成當地
+    日期就是該報價所屬的交易日。盤後時段這個值仍停在當天收盤那一刻，
+    不會跟著盤後成交往前走 —— 正是我們要的定錨點。
+
+    ⚠️ 一定要確認那一場已經收盤才能回傳。盤中的 regularMarketPrice 是
+    即時價而不是收盤價，拿去當「收盤」會印出一個當天根本沒成立的數字。
+    正式排程在 20:20 ET 跑不會遇到，但手動測試或排程漂移就會 ——
+    而那個錯誤在報告上完全看不出來。
+
+    判斷用「現在」而不是用那筆成交的時刻：冷門股最後一筆可能停在
+    15:58，用成交時刻去比會把一場已經結束的交易誤判成還沒結束。
+    """
+    t = (info or {}).get("regularMarketTime")
+    if not isinstance(t, (int, float)):
+        return None
+    tz = market_tz(ticker)
+    local = dt.datetime.fromtimestamp(t, tz)
+    now = dt.datetime.now(tz)
+    if local.date() < now.date():
+        return local.date()          # 更早的交易日，必然已結束
+    if local.date() > now.date():
+        return None                  # 不合理（時區弄錯才會出現）
+    # 就是當地的今天：收盤後再留 30 分鐘緩衝才認帳
+    done_at = dt.time(14, 0) if is_tw(ticker) else dt.time(16, 30)
+    return local.date() if now.time() >= done_at else None
+
+
+def snapshot(ticker, info=None):
     hist = fetch_history(ticker)
     if hist is None:
         return None
@@ -472,21 +532,46 @@ def snapshot(ticker):
     if len(hist) < 2:
         return None
 
-    last, prev = hist.iloc[-1], hist.iloc[-2]
-    close, prev_close = _finite(last["Close"]), _finite(prev["Close"])
+    # 預設：日 K 的最後一列就是本次要報的收盤，分母是它前面 20 列。
+    sess = hist.index[-1].date()
+    close, prev_close = _finite(hist.iloc[-1]["Close"]), _finite(hist.iloc[-2]["Close"])
+    vol = _finite(hist.iloc[-1].get("Volume"))
+    vol_window = hist["Volume"].iloc[-21:-1]
+    source = "hist"
+
+    # 日 K 落後一個交易日時，改用報價端點的那一場。
+    #
+    # 為什麼需要這一段：2026-09 起 Yahoo 的 history() 在美股收盤後數小時
+    # （20:20 ET 實測）仍然「完全沒有當天那一列」—— 不是有列但 Close 是
+    # NaN（那會觸發 fetch_history 的軟重試），是整列不存在，所以
+    # fetch_history 第一次就拿到「最後一列收盤有效」而直接成功返回，
+    # 零重試、零警告、Actions 全綠，報告安靜地變成前一天的。
+    # 同一刻 info 端點已經是當天 —— 兩個端點出檔進度不同。
+    #
+    # ⚠️ 前收仍然取日 K 的最後一列，不用 info 的 regularMarketPreviousClose。
+    #    後者不可信：0050.TW 實測 info 給 116.05、日 K 給 116.50（除息調整
+    #    的基準不同），混用會算出一個錯的漲跌幅。
+    q_sess = quote_session_date(info, ticker)
+    q_close = _finite((info or {}).get("regularMarketPrice"))
+    if q_sess and q_sess > sess and q_close is not None:
+        sess, close = q_sess, q_close
+        prev_close = _finite(hist.iloc[-1]["Close"])
+        vol = _finite((info or {}).get("regularMarketVolume"))
+        vol_window = hist["Volume"].iloc[-20:]   # 全部都早於 q_sess，無須再切掉尾列
+        source = "quote"
+
     if close is None or not prev_close:
         return None
 
     change_pct = (close - prev_close) / prev_close * 100
 
     # 量能 = 當日成交量 ÷ 前 20 個交易日均量（分母不含當日）。
-    # 一併回傳分母實際用了幾天：iloc[-21:-1] 在資料不足時會自動縮短，
+    # 一併回傳分母實際用了幾天：切片在資料不足時會自動縮短，
     # 舊版對此毫無標示，7 個交易日的新股也會算出一個號稱「20 日均量」
     # 的數字。報告需要據此加註，不能讓讀者誤以為都是同一個基準。
     vol_ratio, vol_days = None, 0
-    vol = _finite(last.get("Volume"))
     if vol is not None:
-        window = hist["Volume"].iloc[-21:-1].dropna()
+        window = vol_window.dropna()
         vol_days = len(window)
         if vol_days >= 2:
             avg_vol = _finite(window.mean())
@@ -497,20 +582,24 @@ def snapshot(ticker):
 
     return {
         "ticker": ticker,
-        "date": hist.index[-1].date().isoformat(),
+        "date": sess.isoformat(),
         "close": close,
         "prev_close": prev_close,
         "change_pct": change_pct,
         "vol_ratio": vol_ratio,
         "vol_days": vol_days,
+        # "quote" 代表當日量取自收盤即時值而非最終合併量（實測偏低
+        # 0.6%～4.9%），量能倍數因此略微低估。報告據此加註。
+        "close_source": source,
     }
 
 
-def after_hours(ticker, expected_close=None):
+def after_hours(ticker, expected_close=None, info=None):
     """盤後報價。沒有盤後交易的標的（台股、指數）回 None。
 
     走 Ticker.info —— fast_info 沒有 postMarketPrice 欄位。
-    每檔約 0.3 秒，29 檔約 10 秒，成本可接受。
+    info 由呼叫端傳入（snapshot() 也要用同一份，見 fetch_quote()）；
+    沒傳才自己抓。
 
     postMarketChangePercent 的單位已經是百分點（實測 AAPL 312.4861 對
     311.00 是 +0.4778%，欄位值就是 0.47785），不需要再乘 100。
@@ -526,11 +615,8 @@ def after_hours(ticker, expected_close=None):
     ⚠️ 盤後成交稀薄、價差大，單筆大單就能拉動報價，且盤後漲跌不代表
     隔日開盤會維持。報告上必須標示這點，不可與正常盤數字並列而不加註。
     """
-    try:
-        info = yf.Ticker(ticker).info
-    except Exception as e:
-        print(f"  [警告] {ticker} 盤後報價抓取失敗：{str(e)[:80]}")
-        return None
+    if info is None:
+        info = fetch_quote(ticker)
 
     price = _finite(info.get("postMarketPrice"))
     if price is None:
@@ -563,14 +649,7 @@ def latest_session_from_quote(ticker="SPY"):
     就能在不自己維護假日表的前提下知道「今天該有哪一天的資料」。
     用 SPY 而非個股：流動性最高、最早出檔，個股晚一步是常態。
     """
-    try:
-        t = yf.Ticker(ticker).info.get("regularMarketTime")
-    except Exception as e:
-        print(f"  [警告] 無法取得 {ticker} 的最新交易日：{str(e)[:80]}")
-        return None
-    if not isinstance(t, (int, float)):
-        return None
-    return dt.datetime.fromtimestamp(t, ZoneInfo("America/New_York")).date()
+    return quote_session_date(fetch_quote(ticker), ticker)
 
 
 def stale_us_tickers(snaps, expected):
@@ -590,25 +669,57 @@ def stale_us_tickers(snaps, expected):
 
 
 def market_was_open_today():
+    """今天美股有開盤嗎。
+
+    兩個端點任一認定今天是交易日就算有開。只看日 K 會在正常交易日
+    判定休市、整份報告跳過不寄 —— 因為 history() 常常在 20:20 ET
+    還沒有當天那一列（見 snapshot() 的註解）。
+    """
     spy = fetch_history("SPY", period="5d")
     if spy is None:
+        return True          # 問不到就不要擅自跳過
+    if spy.index[-1].date() == TODAY:
         return True
-    return spy.index[-1].date() == TODAY
+    q = quote_session_date(fetch_quote("SPY"), "SPY")
+    if q is None:
+        print(f"  [警告] 日 K 最新為 {spy.index[-1].date()}、報價端點又問不到"
+              f"交易日，無法確認今天（{TODAY}）是否開盤，依日 K 判定休市")
+        return False
+    if q == TODAY:
+        print(f"  [注意] 日 K 仍停在 {spy.index[-1].date()}，但報價端點顯示"
+              f"今天（{TODAY}）有開盤，繼續執行")
+        return True
+    return False
 
 
 # ------------------------------------------------------------
 # 新聞（Google News RSS，依股票只抓一次、所有訂閱者共用）
 # ------------------------------------------------------------
-def google_news(query, lang="en", limit=12, days=3):
-    """抓取近 N 天新聞，回傳結構化項目（含來源與連結）"""
-    q = f"{query} when:{days}d"
+def google_news(query, lang="en", limit=12, days=3, until_dt=None):
+    """抓取新聞，回傳結構化項目（含來源與連結）。
+
+    視窗預設是「現在往前 N 天」。until_dt 傳入時改成「until_dt 往前
+    N 天」，且不收 until_dt 當刻之後的消息。
+
+    ⚠️ until_dt 要傳「報告實際採用的收盤日之隔日 00:00（該市場時區）」。
+    不傳的話視窗釘在「現在」，而報告的收盤價有可能是前一個交易日 ——
+    AI 就會拿隔天的頭條去解釋前一天的漲跌（2026-10-07 事故：報告用
+    10/06 的收盤、新聞抓到 10/07，AI 寫出一套讀起來完全合理但因果
+    顛倒的說明）。新聞本身沒有錯，是比價格晚了一個交易日，
+    而這種錯誤在成品上完全看不出來。
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    end = until_dt or now
+    start = end - dt.timedelta(days=days)
+    # Google News 的 when: 只能表達「從現在往前幾天」，沒有指定結束日的
+    # 語法，所以把查詢窗口放寬到涵蓋 start，多出來的部分在下面本地剔除。
+    q = f"{query} when:{max(days, (now - start).days + 1)}d"
     if lang == "zh":
         url = (f"https://news.google.com/rss/search?q={quote(q)}"
                f"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
     else:
         url = (f"https://news.google.com/rss/search?q={quote(q)}"
                f"&hl=en-US&gl=US&ceid=US:en")
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
     items = []
     try:
         feed = feedparser.parse(url)
@@ -618,7 +729,7 @@ def google_news(query, lang="en", limit=12, days=3):
             pub = None
             if getattr(e, "published_parsed", None):
                 pub = dt.datetime(*e.published_parsed[:6], tzinfo=dt.timezone.utc)
-                if pub < cutoff:      # 硬性過濾，確保只用近三天的消息
+                if pub < start or pub >= end:   # 硬性過濾，兩頭都要擋
                     continue
             src = ""
             try:
@@ -671,14 +782,31 @@ def rank_news(items, ticker, top_n):
     return sorted(relevant, key=lambda it: it.get("date", ""), reverse=True)[:top_n]
 
 
-def news_for_ticker(t, days=3, top_n=5):
-    """先抓近 N 日；若相關的則數不足，再放寬到近七日補足（寧可舊，不可錯）"""
+def session_end_utc(session, ticker):
+    """該交易日的「結束時刻」（當地午夜），用來擋掉之後的新聞。
+
+    取當地午夜而不是收盤那一刻：財報多在收盤後才發，那些消息確實
+    屬於這一個交易日（也對應報告並排顯示的盤後報價），不該被擋掉。
+    要擋的是隔天那一整天。
+    """
+    if session is None:
+        return None
+    return dt.datetime.combine(session + dt.timedelta(days=1), dt.time(0, 0),
+                               tzinfo=market_tz(ticker)).astimezone(dt.timezone.utc)
+
+
+def news_for_ticker(t, days=3, top_n=5, until=None):
+    """先抓近 N 日；若相關的則數不足，再放寬到近七日補足（寧可舊，不可錯）。
+
+    until 是報告實際採用的收盤日（date）。一定要傳 —— 見 google_news()。
+    """
     code = t.split(".")[0]
+    until_dt = session_end_utc(until, t)
 
     def fetch(d):
         if is_tw(t):
-            return google_news(f"{code} 股價", lang="zh", days=d)
-        return google_news(f"{t} stock", lang="en", days=d)
+            return google_news(f"{code} 股價", lang="zh", days=d, until_dt=until_dt)
+        return google_news(f"{t} stock", lang="en", days=d, until_dt=until_dt)
 
     picked = rank_news(fetch(days), t, top_n)
     if len(picked) < top_n and days < 7:
@@ -1096,7 +1224,11 @@ def build_report_html(lang, sub, rows, failed, market_overview,
     wl_rows = ""
     for r in rows:
         vd = r.get("vol_days", 0)
-        vol_txt = (f"{r['vol_ratio']:.2f}x{'*' if 0 < vd < 20 else ''}"
+        # * = 分母不足 20 日；† = 當日量取自收盤即時報價而非最終合併量。
+        # 兩者是不同的誤差來源，所以用兩個記號，不合併成一個。
+        marks = ("*" if 0 < vd < 20 else "") + \
+                ("†" if r.get("close_source") == "quote" else "")
+        vol_txt = (f"{r['vol_ratio']:.2f}x{marks}"
                    if r.get("vol_ratio") else "—")
         ah = r.get("after") or {}
         ah_px = f"{ah['price']:,.2f}" if ah.get("price") is not None else "—"
@@ -1113,9 +1245,12 @@ def build_report_html(lang, sub, rows, failed, market_overview,
     # 分母不足 20 日的標的要逐一列出天數，只放一個星號讀者無從判斷差多少
     short = [f"{r['ticker']} {r['vol_days']}" + ("日" if lang == "zh" else "d")
              for r in rows if r.get("vol_ratio") and 0 < r.get("vol_days", 0) < 20]
+    live_vol = any(r.get("close_source") == "quote" and r.get("vol_ratio")
+                   for r in rows)
     vol_note = t["vol_note"].format(
         short=t["vol_short"].format(list="、".join(short) if lang == "zh"
-                                    else ", ".join(short)) if short else "")
+                                    else ", ".join(short)) if short else "",
+        live=t["vol_live"] if live_vol else "")
 
     stocks_html = ""
     for r in rows:
@@ -1365,20 +1500,25 @@ def main():
         print("今日美股休市（週末或假日），跳過執行。")
         return
 
+    # 每檔都要同時問日 K 與報價端點：history() 常常在 20:20 ET 還沒有當天
+    # 那一列，報價端點已經有了，由 snapshot() 決定採用哪一個（見其註解）。
+    def snap(tkr):
+        return snapshot(tkr, info=fetch_quote(tkr))
+
     # 1) 指數與類股（共用）
     print("抓取指數與類股…")
     index_snaps, sector_snaps = [], []
     for tkr, zh, en in INDEXES:
-        s = snapshot(tkr)
+        s = snap(tkr)
         if s:
             index_snaps.append(({"zh": zh, "en": en}, s))
         time.sleep(1)
     if any(is_tw(tk) for tk in unique_tickers):
-        s = snapshot("^TWII")
+        s = snap("^TWII")
         if s:
             index_snaps.append(({"zh": "台股加權指數", "en": "Taiwan TAIEX"}, s))
     for tkr, zh, en in SECTORS:
-        s = snapshot(tkr)
+        s = snap(tkr)
         if s:
             sector_snaps.append(({"zh": zh, "en": en}, s))
         time.sleep(1)
@@ -1387,13 +1527,17 @@ def main():
     print(f"抓取 {len(unique_tickers)} 檔個股…")
     snaps, failed_tickers = {}, set()
     for tk in unique_tickers:
-        s = snapshot(tk)
+        s = snap(tk)
         time.sleep(1)
         if s:
             snaps[tk] = s
         else:
             failed_tickers.add(tk)
             print(f"  [警告] {tk} 無法取得價格")
+    quoted = [tk for tk, s in snaps.items() if s.get("close_source") == "quote"]
+    if quoted:
+        print(f"  [注意] {len(quoted)} 檔的日 K 尚無當日那一列，收盤價改取自"
+              f"報價端點（當日量為收盤即時值，量能倍數略為低估）")
 
     # 盤後報價。財報多在美股收盤後公布，正常盤收盤價看不出那段反應，
     # 而新聞卻抓得到 —— 不補這一段，AI 會拿到互相矛盾的訊號。
@@ -1403,7 +1547,13 @@ def main():
     print(f"抓取盤後報價（{AH_CAPTURED_AT.strftime('%H:%M')} PT）…")
     ah_n = 0
     for tk in snaps:
-        # 一定要把這次要並排顯示的收盤價傳進去，讓它確認是同一個交易日
+        # 一定要把這次要並排顯示的收盤價傳進去，讓它確認是同一個交易日。
+        #
+        # ⚠️ 這裡刻意**不**把價量階段抓的那份 info 傳進來重用，雖然
+        #    after_hours() 接受。盤後報價一直在動，上面那份是幾分鐘前
+        #    （指數與類股先抓，整段約兩三分鐘）的狀態，重用等於讓
+        #    AH_CAPTURED_AT 這個時戳說謊，而標時戳的目的就是讓讀者知道
+        #    那是幾點的數字。多打一次請求換一個誠實的時間，划算。
         a = after_hours(tk, expected_close=snaps[tk]["close"])
         if a:
             snaps[tk]["after"] = a
@@ -1432,9 +1582,15 @@ def main():
     news_days = int(cfg.get("news", {}).get("days", 3))
     news_shown = int(cfg.get("news", {}).get("items_per_stock", 5))
     print(f"抓取新聞（近 {news_days} 天，每檔取 {news_shown} 則）…")
-    news_cache = {tk: news_for_ticker(tk, days=news_days, top_n=news_shown)
-                  for tk in snaps}
-    market_news_items = google_news("stock market today", limit=8, days=news_days)
+    # 每檔的新聞視窗釘在「該檔報告實際採用的收盤日」，不是釘在「現在」。
+    # 不這樣做的話，收盤價退回前一個交易日時會拿隔天的頭條去解釋前一天的
+    # 漲跌 —— 讀起來完全合理但因果顛倒（見 google_news() 的註解）。
+    news_cache = {tk: news_for_ticker(tk, days=news_days, top_n=news_shown,
+                                      until=dt.date.fromisoformat(s["date"]))
+                  for tk, s in snaps.items()}
+    market_news_items = google_news(
+        "stock market today", limit=8, days=news_days,
+        until_dt=session_end_utc(EXPECTED_SESSION, "SPY"))
     for tk, items in news_cache.items():
         if len(items) < 3:
             print(f"  [注意] {tk} 近 {news_days} 天僅取得 {len(items)} 則新聞，"
@@ -1529,15 +1685,20 @@ def main():
 
 {lines}
 
-成因通常是 Yahoo 的 history() 端點在收盤後數小時仍未出檔。
-程式已自動退回前一個完整交易日，報告的「資料日期」欄有如實標示，
-並且已停用盤後欄位（避免並排不同交易日的數字）。
+這代表日 K 與報價端點「兩邊都還沒出當天的資料」。程式平常會在日 K
+缺當日那一列時改用報價端點補上，所以收到這封信是比較少見的狀況。
 
-要補一份最新的，到 Actions 手動觸發 daily-brief-multi，
-mode 選 auto。通常晚上九點後 Yahoo 就補齊了。
+報告本身是自洽的，不是壞的：
+  ・「資料日期」欄如實標示採用的交易日
+  ・新聞視窗同步釘在該交易日，不會拿隔天的頭條解釋前一天的漲跌
+  ・盤後欄位已停用，避免並排不同交易日的數字
+
+要補一份最新的，到 Actions 手動觸發 daily-brief-multi，mode 選 auto。
+通常晚上九點後 Yahoo 就補齊了。
 """)
-        raise SystemExit(
-            f"資料落後：{len(STALE_ROWS)} 檔的收盤價早於 {EXPECTED_SESSION}")
+        # 刻意不 raise SystemExit。報告已自洽寄出，把 Actions 標成紅色
+        # 會讓「紅勾」失去意義 —— 真正壞掉的那天就分辨不出來了。
+        # 這封信本身就是通知管道。
 
 
 if __name__ == "__main__":
